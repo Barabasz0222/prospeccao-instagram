@@ -1,9 +1,22 @@
 import { loadEnv } from "@/lib/env";
 import { loadBusiness } from "@/lib/business";
+import { getDb } from "@/db/client";
+import { getSetting } from "@/features/settings/repo";
+import { updateSettingAction } from "../leads/actions";
 
 export const dynamic = "force-dynamic";
 
-export default function ConfiguracoesPage() {
+const TUNABLES: { key: string; label: string; fallback: number }[] = [
+  { key: "leads.qualify_threshold", label: "Limiar de qualificação (0–1)", fallback: 0.4 },
+  { key: "followup.delay_days", label: "Dias até o follow-up", fallback: 3 },
+  { key: "followup.max", label: "Máximo de follow-ups", fallback: 1 },
+];
+
+export default async function ConfiguracoesPage() {
+  const db = getDb();
+  const tunables = await Promise.all(
+    TUNABLES.map(async (t) => ({ ...t, value: await getSetting<number>(db, t.key, t.fallback) })),
+  );
   let env: ReturnType<typeof loadEnv> | null = null;
   let envError: string | null = null;
   try {
@@ -46,6 +59,28 @@ export default function ConfiguracoesPage() {
         <p className="mt-2 text-xs text-neutral-500">
           Estes valores vêm do arquivo <code>.env</code>. Edite o arquivo e reinicie o sistema para alterá-los.
         </p>
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-neutral-500">
+          Parâmetros ajustáveis (a IA também pode alterar dentro destes limites)
+        </h2>
+        <div className="space-y-2">
+          {tunables.map((t) => (
+            <form key={t.key} action={updateSettingAction} className="flex items-center gap-2 text-sm">
+              <input type="hidden" name="key" value={t.key} />
+              <label className="w-64 text-neutral-600 dark:text-neutral-400">{t.label}</label>
+              <input
+                name="value"
+                defaultValue={String(t.value)}
+                className="w-28 rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900"
+              />
+              <button className="rounded border border-neutral-300 px-3 py-1 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900">
+                Salvar
+              </button>
+            </form>
+          ))}
+        </div>
       </section>
 
       <section>

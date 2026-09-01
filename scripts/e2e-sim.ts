@@ -104,7 +104,15 @@ await handleProcessInbound(ctx, {
 const inboundCount = (await db.select().from(messages)).filter((m) => m.direction === "inbound").length;
 console.log("mensagens inbound gravadas (esperado 1):", inboundCount);
 
-h("6. Trilha de auditoria");
+h("6. Sinal externo: cliente cadastrou e ativou");
+const { applyCustomerSignal } = await import("@/features/leads/lifecycle");
+const reg = await applyCustomerSignal(db, { type: "registered", leadId: lead!.id });
+const act = await applyCustomerSignal(db, { type: "active_customer", leadId: lead!.id });
+console.log("registered:", reg, "| active_customer:", act);
+const [final] = await db.select().from(leads).where(eq(leads.id, lead!.id));
+console.log("etapa final do lead:", final!.pipelineStage);
+
+h("7. Trilha de auditoria");
 console.log("browser_send_log:", (await db.select().from(browserSendLog)).map((r) => r.result));
 console.log(
   "decisions_log:",
@@ -122,6 +130,7 @@ const ok =
   sent && "sent" in sent &&
   inbound.matched === true &&
   refreshed!.channelState === "api_active" &&
-  inboundCount === 1;
+  inboundCount === 1 &&
+  final!.pipelineStage === "active_customer";
 console.log(ok ? "✅ Fluxo ponta a ponta OK" : "❌ Fluxo falhou");
 process.exit(ok ? 0 : 1);

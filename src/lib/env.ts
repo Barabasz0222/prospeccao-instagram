@@ -32,6 +32,9 @@ const schema = z.object({
   BROWSER_SEND_MODE: z
     .enum(["simulation", "dry_run", "live"])
     .default("simulation"),
+
+  // Optional: shared token for the lifecycle-signal ingest endpoint.
+  INGEST_TOKEN: z.string().min(8).optional(),
 });
 
 export type Env = z.infer<typeof schema>;

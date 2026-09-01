@@ -1,6 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getLeadDetail, STAGE_LABELS, CHANNEL_LABELS } from "@/features/leads/queries";
+import { loadBusiness } from "@/lib/business";
+import {
+  advanceLeadStageAction,
+  applySignalAction,
+  markDoNotContactAction,
+} from "../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +50,44 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           v={conversation?.apiWindowExpiresAt ? new Date(conversation.apiWindowExpiresAt).toLocaleString("pt-BR") : "—"}
         />
       </dl>
+
+      <section className="flex flex-wrap gap-2">
+        <form action={advanceLeadStageAction}>
+          <input type="hidden" name="leadId" value={lead.id} />
+          <input type="hidden" name="to" value={lead.funnel === "customer" ? "whatsapp_handoff" : "joined_affiliate_group"} />
+          <button className="rounded border border-neutral-300 px-3 py-1.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900">
+            {lead.funnel === "customer" ? "Marcar: encaminhado ao WhatsApp" : "Marcar: entrou no grupo"}
+          </button>
+        </form>
+        <form action={applySignalAction}>
+          <input type="hidden" name="leadId" value={lead.id} />
+          <input type="hidden" name="type" value={lead.funnel === "customer" ? "registered" : "affiliate_joined"} />
+          <button className="rounded border border-neutral-300 px-3 py-1.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900">
+            {lead.funnel === "customer" ? "Marcar: cadastrado" : "Sinal: entrou"}
+          </button>
+        </form>
+        <form action={applySignalAction}>
+          <input type="hidden" name="leadId" value={lead.id} />
+          <input type="hidden" name="type" value={lead.funnel === "customer" ? "active_customer" : "affiliate_generated_customer"} />
+          <button className="rounded border border-emerald-400 px-3 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-950">
+            {lead.funnel === "customer" ? "Marcar: cliente ativo" : "Marcar: gerou cliente"}
+          </button>
+        </form>
+        <a
+          href={loadBusiness().links.whatsapp}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded border border-neutral-300 px-3 py-1.5 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          Abrir WhatsApp
+        </a>
+        <form action={markDoNotContactAction}>
+          <input type="hidden" name="leadId" value={lead.id} />
+          <button className="rounded border border-red-400 px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950">
+            Não contatar
+          </button>
+        </form>
+      </section>
 
       {lead.bio && (
         <div className="rounded border border-neutral-200 p-3 text-sm dark:border-neutral-800">

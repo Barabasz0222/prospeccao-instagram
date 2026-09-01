@@ -118,16 +118,33 @@ CHROME_PROFILE_DIR=./.chrome-profile
 
 ---
 
+### 3.5 Ingestão de sinais externos (opcional)
+
+`INGEST_TOKEN` habilita `POST /api/ingest/lifecycle` para o seu CRM / billing /
+portal de afiliados marcarem o avanço do lead (o sistema **não** infere isso da
+conversa):
+
+```bash
+curl -X POST http://localhost:3000/api/ingest/lifecycle \
+  -H "Authorization: Bearer $INGEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"active_customer","igUsername":"construtora.exemplo"}'
+```
+
+Tipos: `registered`, `active_customer`, `affiliate_joined`,
+`affiliate_generated_customer`. Sem token, o endpoint fica desativado (401).
+Você também pode marcar manualmente na tela do lead.
+
 ## 4. Banco de dados
 
 ```bash
 pnpm db:migrate      # aplica migrações
-pnpm db:backup       # backup manual (também roda automático)
+pnpm db:backup       # backup manual (o worker também faz a cada 6h, com retenção)
+pnpm db:restore      # restaura do backup mais recente (pare o app antes)
+pnpm db:restore backups/app.db.2026-....bak   # restaura de um específico
 ```
 
-O banco é SQLite (`data/app.db`), fonte única de verdade. Backups em
-`backups/`. Para restaurar: pare o sistema, copie o `.bak` desejado sobre
-`data/app.db`, rode `pnpm db:migrate` e suba de novo.
+O banco é SQLite (`data/app.db`), fonte única de verdade. Backups em `backups/`.
 
 ---
 
@@ -168,9 +185,27 @@ pnpm worker                 # worker, em outro terminal
 
 ## 8. Ordem recomendada de ativação
 
-1. `simulation` — rode o fluxo ponta a ponta com dados de teste
-   (`pnpm tsx scripts/seed-demo.ts` e `pnpm tsx scripts/e2e-sim.ts`).
-2. `dry_run` — valide o primeiro contato no Chrome real, sem enviar.
-3. **Autorização explícita sua** → `live` com `MAX_DMS_PER_DAY` baixo.
+1. `simulation` — rode o fluxo ponta a ponta:
+   ```bash
+   pnpm sim                       # fluxo completo em memória (descoberta → cliente ativo)
+   pnpm seed && pnpm drain        # popula data/app.db e processa a fila
+   pnpm dev                       # abra http://localhost:3000
+   ```
+2. `dry_run` — valide o primeiro contato no Chrome real, **sem enviar**:
+   ```bash
+   BROWSER_SEND_MODE=dry_run pnpm tsx scripts/browser-smoke.ts @perfil_teste "sua mensagem"
+   ```
+3. **Autorização explícita sua** → `live` com `MAX_DMS_PER_DAY` baixo:
+   ```bash
+   SMOKE_CONFIRM=eu-autorizo BROWSER_SEND_MODE=live pnpm tsx scripts/browser-smoke.ts @perfil "mensagem"
+   ```
 4. Piloto limitado (aquecimento: 5/dia na 1ª semana, +5 por semana).
 5. Autonomia total dentro dos limites.
+
+## 9. Ajustar o scraping real do Instagram
+
+Os seletores em `src/integrations/browser/cdp-driver.ts` (`discoverProfiles` e
+`sendDm`) são um ponto de partida — o DOM do Instagram muda. Rode em `dry_run`,
+observe o `screenshot`/`a11y.json` em `screenshots/` quando algo falhar, e
+ajuste os `getByRole` / seletores. Nada de scraping é obrigatório para os
+testes: o modo `simulation` usa um driver falso.

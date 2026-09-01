@@ -21,6 +21,10 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:backup": "tsx src/db/backup.ts",
+    "db:restore": "tsx scripts/restore-backup.ts",
+    "seed": "tsx scripts/seed-demo.ts",
+    "drain": "tsx scripts/drain-once.ts",
+    "sim": "tsx scripts/e2e-sim.ts",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {

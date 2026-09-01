@@ -164,6 +164,30 @@ async function currentChannel(db: Db, leadId: number): Promise<ChannelState> {
   return lead.channelState as ChannelState;
 }
 
+/**
+ * Advances the pipeline to `to`, stepping through every intermediate stage in
+ * the funnel order so each transition stays valid and auditable. No-op if the
+ * lead is already at or past `to`. Refuses backward moves.
+ */
+export async function advancePipeline(db: Db, leadId: number, to: string): Promise<void> {
+  const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${leadId} inexistente`);
+  const order = pipelineOrder(lead.funnel);
+  const fromIdx = order.indexOf(lead.pipelineStage);
+  const toIdx = order.indexOf(to);
+  if (toIdx === -1) throw new Error(`etapa desconhecida: ${to}`);
+  if (toIdx <= fromIdx) return;
+  for (let i = fromIdx + 1; i <= toIdx; i++) {
+    await movePipeline(db, leadId, order[i]!);
+  }
+}
+
+function pipelineOrder(funnel: "customer" | "affiliate"): readonly string[] {
+  return funnel === "customer"
+    ? ["discovered", "qualified", "contacted", "replied", "interested", "whatsapp_handoff", "registered", "active_customer", "closed"]
+    : ["discovered", "qualified", "contacted", "replied", "interested", "joined_affiliate_group", "active_affiliate", "generated_customer", "closed"];
+}
+
 /** Guarded pipeline-stage transition on the lead. */
 export async function movePipeline(db: Db, leadId: number, to: string): Promise<void> {
   const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);

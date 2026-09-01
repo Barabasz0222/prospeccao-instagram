@@ -31,13 +31,14 @@ pnpm dev                                    # panel :3000 + worker
 Demo data + explore the panel without sending anything:
 
 ```bash
-pnpm tsx scripts/seed-demo.ts
+pnpm seed && pnpm drain
 ```
 
-End-to-end flow in simulation (no real Chrome, no real API):
+End-to-end flow in simulation — discovery → dedupe → browser DM → channel lock →
+webhook handoff → API reply → WhatsApp → registered → active_customer:
 
 ```bash
-pnpm tsx scripts/e2e-sim.ts
+pnpm sim
 ```
 
 ## Checks

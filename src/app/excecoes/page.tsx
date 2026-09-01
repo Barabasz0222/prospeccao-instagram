@@ -1,6 +1,7 @@
 import { desc } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { exceptions, integrationAlerts } from "@/db/schema";
+import { resolveExceptionAction } from "../leads/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -20,9 +21,19 @@ export default async function ExcecoesPage() {
         ) : (
           <ul className="mt-2 space-y-2 text-sm">
             {exc.map((e) => (
-              <li key={e.id} className="rounded border border-neutral-200 p-3 dark:border-neutral-800">
-                <span className="font-medium">{e.kind}</span> · {e.status}
-                {e.detail ? <div className="text-neutral-500">{e.detail}</div> : null}
+              <li key={e.id} className="flex items-start justify-between gap-3 rounded border border-neutral-200 p-3 dark:border-neutral-800">
+                <div>
+                  <span className="font-medium">{e.kind}</span> · {e.status}
+                  {e.detail ? <div className="text-neutral-500">{e.detail}</div> : null}
+                </div>
+                {e.status === "open" && (
+                  <form action={resolveExceptionAction}>
+                    <input type="hidden" name="id" value={e.id} />
+                    <button className="shrink-0 rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900">
+                      Resolver
+                    </button>
+                  </form>
+                )}
               </li>
             ))}
           </ul>

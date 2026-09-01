@@ -94,12 +94,43 @@ before doing anything.
   after explicit operator authorization. Levels 2–3 are the operator's to run
   on their machine (see `SETUP.md`).
 
+## Discovery, scoring, experiments, lifecycle
+
+- **Discovery**: `discover_from_keywords` → `BrowserDriver.discoverProfiles`
+  (CDP best-effort DOM scrape; fake driver returns deterministic fixtures) →
+  `discover_profiles` (idempotent `discoverLead`) → one `score_lead` job per
+  new lead.
+- **Scoring** (`src/features/leads/scoring.ts`): deterministic. Customer funnel
+  weighs ICP keyword/segment overlap, geography, and actor type
+  (decision_maker/owner/store/…). Affiliate funnel weighs `affiliateTopics`
+  relevance, an audience band (2k–150k), creator detection, and geography.
+  `score_lead` qualifies above `leads.qualify_threshold` (a tunable setting),
+  assigns an opener A/B variant, generates the opener, and queues the first DM.
+- **Experiments** (`src/features/experiments`): `pickVariant` is a hash of
+  `(experimentKey, leadId)` — deterministic, weighted, stable across re-runs.
+  `recordOutcome` is called on each pipeline advance; `analyzeExperiment` never
+  returns a `suggestedWinner` before `targetSampleSize` assignments.
+- **Lifecycle** (`src/features/leads/lifecycle.ts`): `registered`,
+  `active_customer`, `joined_affiliate_group`, `generated_customer` are set
+  only by an external signal — `POST /api/ingest/lifecycle` (Bearer token) or
+  the panel buttons — never inferred from a conversation. `advancePipeline`
+  walks every intermediate stage so each hop stays valid and audited.
+- **Follow-up**: `send_followup` sends one browser nudge if a thread stays
+  silent past `followup.delay_days`; it shares `runBrowserSend` with the first
+  DM (mutex, rate gate, circuit breaker, evidence capture).
+- **Backup**: `backupDatabase` runs every 6h in the worker with retention;
+  `restoreDatabase` / `pnpm db:restore` for recovery (both covered by a test).
+
 ## Known MVP trade-offs
 
 - Node 22 LTS (spec asked 24; 22 is the current LTS on this machine).
 - `better-sqlite3` needs a C toolchain on Windows; we use `@libsql/client`
   (prebuilt) with the Drizzle `libsql` driver. Same SQLite semantics (WAL,
   FKs, busy timeout).
-- `discover_profiles` consumes candidate lists (seed or an upstream scraper
-  job). The Instagram-side scraping of keyword/hashtag/related-profile signals
-  is a browser job to be filled in on top of the existing CDP driver.
+- `CdpBrowserDriver.discoverProfiles` / `sendDm` selectors are a starting
+  point; Instagram's DOM shifts, so they are tuned during the `dry_run` phase
+  against the live site (evidence lands in `screenshots/`). None of this blocks
+  tests — `simulation` mode uses the fake driver.
+- WhatsApp Business templates (`src/integrations/whatsapp/templates.ts`) are
+  defined and window/opt-in-gated but not wired to a live WA number yet; the
+  funnel currently just hands off the link.

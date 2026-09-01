@@ -18,6 +18,12 @@ const CREATOR_HINTS = ["criador de conteudo", "creator", "influencer", "digital 
 
 /** Deterministic ICP fit + actor classification from public profile signals. */
 export function scoreLead(lead: Lead, business: Business): ScoreResult {
+  return lead.funnel === "affiliate"
+    ? scoreAffiliate(lead, business)
+    : scoreCustomer(lead, business);
+}
+
+function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   const haystack = normalize(
     [lead.displayName, lead.bio, lead.category, lead.niche, lead.location].filter(Boolean).join(" · "),
   );
@@ -56,11 +62,8 @@ export function scoreLead(lead: Lead, business: Business): ScoreResult {
   const actorType = classifyActor(haystack, lead.funnel);
   reasons.push(`tipo: ${actorType}`);
 
-  // Actor weighting: decision makers/owners are worth more for the customer funnel.
   const actorWeight =
-    lead.funnel === "customer"
-      ? { decision_maker: 1, owner: 0.95, store: 0.8, employee: 0.4, creator: 0.2, unknown: 0.6 }[actorType]
-      : { creator: 1, owner: 0.6, decision_maker: 0.6, store: 0.4, employee: 0.3, unknown: 0.6 }[actorType];
+    { decision_maker: 1, owner: 0.95, store: 0.8, employee: 0.4, creator: 0.2, unknown: 0.6 }[actorType];
 
   const base = 0.5 * keywordScore + 0.25 * segmentScore + 0.15 * geoScore + 0.1;
   const icpScore = round2(Math.max(0, Math.min(1, base * (0.6 + 0.4 * actorWeight))));
@@ -70,6 +73,61 @@ export function scoreLead(lead: Lead, business: Business): ScoreResult {
     actorType,
     niche: lead.niche ?? matchedKeywords[0] ?? null,
     matchedKeywords,
+    reasons,
+  };
+}
+
+/**
+ * Affiliate fit: thematic relevance to affiliateTopics, geography, a real
+ * creator profile, and an audience size in a workable band (not tiny, not a
+ * mega-account whose audience rarely converts to niche B2B).
+ */
+function scoreAffiliate(lead: Lead, business: Business): ScoreResult {
+  const haystack = normalize(
+    [lead.displayName, lead.bio, lead.category, lead.niche].filter(Boolean).join(" · "),
+  );
+  const reasons: string[] = [];
+
+  const topicTokens = new Set<string>();
+  for (const t of business.affiliateTopics) for (const w of keywordTokens(t, 4)) topicTokens.add(w);
+  const hay = keywordTokens(haystack, 4);
+  let topicHits = 0;
+  for (const w of topicTokens) if (hay.has(w)) topicHits++;
+  const topicScore = Math.min(1, topicHits / 3);
+  if (topicHits) reasons.push(`temas de afiliado: ${topicHits}`);
+
+  const actorType = classifyActor(haystack, "affiliate");
+  const isCreator = actorType === "creator";
+  if (isCreator) reasons.push("perfil de criador");
+
+  let audienceScore = 0.4;
+  const f = lead.followerCount ?? 0;
+  if (f >= 2_000 && f <= 150_000) {
+    audienceScore = 1;
+    reasons.push(`audiência ${f} (faixa boa)`);
+  } else if (f > 150_000) {
+    audienceScore = 0.55;
+    reasons.push(`audiência ${f} (grande demais p/ nicho)`);
+  } else if (f > 0) {
+    audienceScore = 0.3;
+    reasons.push(`audiência ${f} (pequena)`);
+  }
+
+  let geoScore = 0.5;
+  if (lead.location) {
+    const loc = normalize(lead.location);
+    if (loc.includes(normalize(business.geography.region))) geoScore = 1;
+    else if (loc.includes(normalize(business.geography.country)) || loc.includes("brasil")) geoScore = 0.8;
+  }
+
+  const base = 0.45 * topicScore + 0.3 * audienceScore + 0.15 * geoScore + 0.1;
+  const icpScore = round2(Math.max(0, Math.min(1, base * (isCreator ? 1 : 0.7))));
+
+  return {
+    icpScore,
+    actorType,
+    niche: lead.niche ?? business.affiliateTopics[0] ?? null,
+    matchedKeywords: [],
     reasons,
   };
 }
