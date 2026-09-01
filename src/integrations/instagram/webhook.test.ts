@@ -44,6 +44,20 @@ describe("subscription handshake", () => {
 });
 
 describe("parseInboundMessages", () => {
+  it("handles the Meta dashboard test payload { field, value }", () => {
+    const out = parseInboundMessages({
+      field: "messages",
+      value: {
+        sender: { id: "12334" },
+        recipient: { id: "23245" },
+        timestamp: "1527459824",
+        message: { mid: "random_mid", text: "random_text" },
+      },
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ externalId: "random_mid", senderId: "12334", text: "random_text" });
+  });
+
   it("extracts text DMs and skips echoes", () => {
     const payload = {
       entry: [

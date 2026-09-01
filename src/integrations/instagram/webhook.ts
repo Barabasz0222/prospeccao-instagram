@@ -33,29 +33,57 @@ export type InboundMessage = {
   timestamp: string;
 };
 
-/** Extracts inbound DM events from a Messenger/Instagram webhook payload. */
+type MessagingEntry = {
+  sender?: { id?: string };
+  recipient?: { id?: string };
+  timestamp?: number | string;
+  message?: { mid?: string; text?: string; is_echo?: boolean };
+};
+
+function toInbound(m: MessagingEntry): InboundMessage | null {
+  if (!m.message || m.message.is_echo || !m.message.text || !m.message.mid) return null;
+  const ts = m.timestamp ? Number(m.timestamp) : Date.now();
+  return {
+    externalId: m.message.mid,
+    senderId: m.sender?.id ?? "",
+    recipientId: m.recipient?.id ?? "",
+    text: m.message.text,
+    timestamp: new Date(ts < 1e12 ? ts * 1000 : ts).toISOString(),
+  };
+}
+
+/**
+ * Extracts inbound DM events. Handles the real webhook shape
+ * (`entry[].messaging[]` / `entry[].changes[].value`) and the bare
+ * `{ field, value }` shape the Meta dashboard "Test" button sends.
+ */
 export function parseInboundMessages(payload: unknown): InboundMessage[] {
   const out: InboundMessage[] = [];
   const body = payload as {
+    field?: string;
+    value?: MessagingEntry;
     entry?: {
-      messaging?: {
-        sender?: { id?: string };
-        recipient?: { id?: string };
-        timestamp?: number;
-        message?: { mid?: string; text?: string; is_echo?: boolean };
-      }[];
+      messaging?: MessagingEntry[];
+      changes?: { field?: string; value?: MessagingEntry }[];
     }[];
   };
+
+  // Meta dashboard test payload: { field: "messages", value: {...} }
+  if (body.field === "messages" && body.value) {
+    const m = toInbound(body.value);
+    if (m) out.push(m);
+  }
+
   for (const entry of body.entry ?? []) {
     for (const m of entry.messaging ?? []) {
-      if (!m.message || m.message.is_echo || !m.message.text || !m.message.mid) continue;
-      out.push({
-        externalId: m.message.mid,
-        senderId: m.sender?.id ?? "",
-        recipientId: m.recipient?.id ?? "",
-        text: m.message.text,
-        timestamp: new Date((m.timestamp ?? Date.now())).toISOString(),
-      });
+      const parsed = toInbound(m);
+      if (parsed) out.push(parsed);
+    }
+    for (const c of entry.changes ?? []) {
+      if (c.field === "messages" && c.value) {
+        const parsed = toInbound(c.value);
+        if (parsed) out.push(parsed);
+      }
     }
   }
   return out;
