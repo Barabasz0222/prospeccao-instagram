@@ -1,3 +1,4 @@
+import "@/lib/dotenv";
 import { backupDatabase } from "./backup-runner";
 
 const dest = backupDatabase();

@@ -1,3 +1,4 @@
+import "@/lib/dotenv";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db/client";
 import { isSystemPaused } from "@/features/settings/repo";

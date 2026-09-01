@@ -1,3 +1,4 @@
+import "@/lib/dotenv";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createClient } from "@libsql/client";
