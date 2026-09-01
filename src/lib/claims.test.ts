@@ -18,8 +18,9 @@ describe("verified-claims guard", () => {
   });
 
   it("blocks paraphrase of an unverified claim", () => {
+    // unverifiedClaims: "Automações da BraszTech aumentam o faturamento das empresas"
     const r = checkOutboundText(
-      "Nossas automações eliminam por completo os erros manuais da sua operação.",
+      "Com nossas automações a BraszTech aumentam bastante o faturamento das empresas parceiras.",
     );
     expect(r.ok).toBe(false);
   });

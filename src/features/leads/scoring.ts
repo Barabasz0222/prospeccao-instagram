@@ -29,13 +29,27 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   );
   const reasons: string[] = [];
 
-  // Keyword overlap against ICP keywords (partial, accent-insensitive).
+  // Keyword fit: exact phrase = full point; partial token coverage = half.
   const matchedKeywords: string[] = [];
+  const hayTokens = keywordTokens(haystack, 3);
+  let kwPoints = 0;
   for (const kw of business.icp.keywords) {
     const kwn = normalize(kw);
-    if (kwn && haystack.includes(kwn)) matchedKeywords.push(kw);
+    const toks = [...keywordTokens(kw, 3)];
+    if (kwn && haystack.includes(kwn)) {
+      matchedKeywords.push(kw);
+      kwPoints += 1;
+    } else if (toks.length > 0) {
+      const present = toks.filter((t) => hayTokens.has(t)).length;
+      if (present === toks.length) {
+        matchedKeywords.push(kw);
+        kwPoints += 1;
+      } else if (present > 0) {
+        kwPoints += (present / toks.length) * 0.5;
+      }
+    }
   }
-  const keywordScore = Math.min(1, matchedKeywords.length / 2);
+  const keywordScore = Math.min(1, kwPoints / 2);
   if (matchedKeywords.length) reasons.push(`palavras-chave ICP: ${matchedKeywords.join(", ")}`);
 
   // Segment token overlap (looser signal).
@@ -47,17 +61,7 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   const segmentScore = Math.min(1, segHits / 4);
   if (segHits) reasons.push(`termos de segmento: ${segHits}`);
 
-  // Geography bonus.
-  let geoScore = 0;
-  if (lead.location) {
-    const loc = normalize(lead.location);
-    if (loc.includes(normalize(business.geography.region))) {
-      geoScore = 1;
-      reasons.push(`região alvo (${business.geography.region})`);
-    } else if (loc.includes(normalize(business.geography.country)) || loc.includes("brasil") || loc.includes("br")) {
-      geoScore = 0.5;
-    }
-  }
+  const geoScore = geoFit(lead.location, business, reasons);
 
   const actorType = classifyActor(haystack, lead.funnel);
   reasons.push(`tipo: ${actorType}`);
@@ -65,7 +69,7 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   const actorWeight =
     { decision_maker: 1, owner: 0.95, store: 0.8, employee: 0.4, creator: 0.2, unknown: 0.6 }[actorType];
 
-  const base = 0.5 * keywordScore + 0.25 * segmentScore + 0.15 * geoScore + 0.1;
+  const base = 0.55 * keywordScore + 0.3 * segmentScore + 0.1 * geoScore + 0.1;
   const icpScore = round2(Math.max(0, Math.min(1, base * (0.6 + 0.4 * actorWeight))));
 
   return {
@@ -145,6 +149,43 @@ function classifyActor(haystack: string, funnel: Lead["funnel"]): Lead["actorTyp
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+const BR_STATES = new Set([
+  "ac","al","ap","am","ba","ce","df","es","go","ma","mt","ms","mg","pa","pb",
+  "pr","pe","pi","rj","rn","rs","ro","rr","sc","sp","se","to",
+  "acre","alagoas","amapa","amazonas","bahia","ceara","distrito federal",
+  "espirito santo","goias","maranhao","mato grosso","mato grosso do sul",
+  "minas gerais","para","paraiba","parana","pernambuco","piaui","rio de janeiro",
+  "rio grande do norte","rio grande do sul","rondonia","roraima","santa catarina",
+  "sao paulo","sergipe","tocantins",
+]);
+
+/** Geography fit 0..1. Region match is best; any recognizably-BR location is
+ *  a solid signal when the ICP targets Brazil. */
+function geoFit(
+  location: string | null,
+  business: Business,
+  reasons: string[],
+): number {
+  if (!location) return 0.3; // unknown — mild neutral, not a penalty
+  const loc = normalize(location);
+  const region = normalize(business.geography.region);
+  const country = normalize(business.geography.country);
+
+  if (region && region !== country && loc.includes(region)) {
+    reasons.push(`região alvo (${business.geography.region})`);
+    return 1;
+  }
+  const looksBr =
+    loc.includes("brasil") ||
+    loc.includes(country) ||
+    loc.split(/[\s,/-]+/).some((tok) => BR_STATES.has(tok));
+  if (looksBr) {
+    reasons.push("localização no Brasil");
+    return 0.8;
+  }
+  return 0.1;
 }
 
 /** Priority bucket 0..3 from score + actor, drives queue ordering. */

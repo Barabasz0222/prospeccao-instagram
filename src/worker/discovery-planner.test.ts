@@ -26,18 +26,18 @@ describe("planQueries", () => {
 });
 
 describe("enqueueDiscoveryRun", () => {
-  it("enqueues one customer + one affiliate discovery job, idempotent per hour", async () => {
+  it("enqueues the customer discovery job (affiliate off without a group link)", async () => {
     const { db } = await makeTestDb();
     const business = loadBusiness();
     const first = await enqueueDiscoveryRun(db, business);
-    expect(first).toBe(2);
+    expect(first).toBe(1); // affiliateGroup is null → funil B skipped
     const second = await enqueueDiscoveryRun(db, business);
     expect(second).toBe(0); // same hour bucket → deduped
 
     const j1 = await claimNext(db, "w");
     expect(j1?.kind).toBe("discover_from_keywords");
     const payload = j1!.payload as { funnel: string; queries: unknown[] };
-    expect(["customer", "affiliate"]).toContain(payload.funnel);
+    expect(payload.funnel).toBe("customer");
     expect(payload.queries.length).toBeGreaterThan(0);
   });
 });
