@@ -77,6 +77,43 @@ export default async function DashboardPage() {
         <h2 className="mb-2 text-sm font-semibold text-neutral-500">Estado do canal</h2>
         <StageTable data={summary.leadsByChannel} />
       </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-neutral-500">Fila de jobs</h2>
+        {summary.jobsByKind.length === 0 ? (
+          <p className="text-sm text-neutral-500">Fila vazia.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {summary.jobsByKind.map((j) => (
+              <span
+                key={`${j.kind}-${j.status}`}
+                className="rounded-full border border-neutral-200 px-3 py-1 text-xs dark:border-neutral-800"
+              >
+                {j.kind} · {j.status}: <strong>{j.n}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-sm font-semibold text-neutral-500">Decisões recentes da IA</h2>
+        {summary.recentDecisions.length === 0 ? (
+          <p className="text-sm text-neutral-500">Nenhuma decisão registrada.</p>
+        ) : (
+          <ul className="space-y-1 text-sm">
+            {summary.recentDecisions.map((d, i) => (
+              <li key={i} className="rounded border border-neutral-200 p-2 dark:border-neutral-800">
+                <span className="text-xs text-neutral-500">
+                  {new Date(d.at).toLocaleString("pt-BR")} · lead {d.leadId ?? "—"}
+                </span>{" "}
+                <strong>{d.decision}</strong>
+                {d.rationale ? ` — ${d.rationale}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

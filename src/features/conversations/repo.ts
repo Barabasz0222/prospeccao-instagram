@@ -7,7 +7,12 @@ import {
   metaIdentityMap,
 } from "@/db/schema";
 import * as schema from "@/db/schema";
-import { canTransitionChannel, isTerminalChannel, type ChannelState } from "@/lib/states";
+import {
+  canTransitionChannel,
+  canTransitionPipeline,
+  isTerminalChannel,
+  type ChannelState,
+} from "@/lib/states";
 
 type Db = LibSQLDatabase<typeof schema>;
 const nowIso = () => new Date().toISOString();
@@ -157,6 +162,20 @@ async function currentChannel(db: Db, leadId: number): Promise<ChannelState> {
   const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
   if (!lead) throw new Error(`lead ${leadId} inexistente`);
   return lead.channelState as ChannelState;
+}
+
+/** Guarded pipeline-stage transition on the lead. */
+export async function movePipeline(db: Db, leadId: number, to: string): Promise<void> {
+  const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${leadId} inexistente`);
+  if (lead.pipelineStage === to) return;
+  if (!canTransitionPipeline(lead.funnel, lead.pipelineStage, to)) {
+    throw new Error(`transição de pipeline inválida (${lead.funnel}): ${lead.pipelineStage} -> ${to}`);
+  }
+  await db
+    .update(leads)
+    .set({ pipelineStage: to, updatedAt: nowIso() })
+    .where(eq(leads.id, leadId));
 }
 
 /** Guarded channel-state transition on the lead. */

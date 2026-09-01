@@ -3,13 +3,16 @@ import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import { browserSendLog, conversations, leads } from "@/db/schema";
 import * as schema from "@/db/schema";
 import { discoverLead } from "@/features/leads/repo";
+import { priorityFromScore, scoreLead } from "@/features/leads/scoring";
+import { assignVariant, recordOutcome } from "@/features/experiments/repo";
 import {
   DuplicateSendError,
   handleInboundReply,
   moveChannel,
   recordOutbound,
 } from "@/features/conversations/repo";
-import { classifyIntent, decideReply } from "@/features/conversations/engine";
+import { classifyIntent, decideReply, generateOpener } from "@/features/conversations/engine";
+import { loadBusiness } from "@/lib/business";
 import { getBrowserDriver } from "@/integrations/browser";
 import { sendApiMessage } from "@/integrations/instagram/api";
 import { getSetting, isSystemPaused, setSetting } from "@/features/settings/repo";
@@ -83,19 +86,145 @@ export async function handleDiscoverProfiles(ctx: JobContext, payload: DiscoverP
   return { created, duplicate, blocked };
 }
 
-// ── send_first_dm ────────────────────────────────────────────────────────────
-type SendFirstDmPayload = { leadId: number; message: string; variantId?: string };
+// ── discover_from_keywords ───────────────────────────────────────────────────
+type DiscoverFromKeywordsPayload = {
+  funnel: "customer" | "affiliate";
+  queries: { kind: "keyword" | "hashtag"; term: string; limit?: number }[];
+};
 
-export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPayload, jobId: number) {
+export async function handleDiscoverFromKeywords(ctx: JobContext, payload: DiscoverFromKeywordsPayload) {
   const { db } = ctx;
-
   if (await isSystemPaused(db)) return { skipped: "system_paused" };
 
+  const driver = getBrowserDriver();
+  const candidates: DiscoverPayload["candidates"] = [];
+
+  for (const q of payload.queries) {
+    const found = await browserMutex.runExclusive(() =>
+      driver.discoverProfiles({ kind: q.kind, term: q.term, limit: q.limit ?? 15 }),
+    );
+    for (const p of found) {
+      candidates.push({
+        igUsername: p.igUsername,
+        profileUrl: p.profileUrl,
+        displayName: p.displayName,
+        bio: p.bio,
+        category: p.category,
+        location: p.location,
+        followerCount: p.followerCount,
+        sourceKeyword: q.term,
+        discoverySource: `browser_${q.kind}`,
+      });
+    }
+  }
+
+  if (candidates.length === 0) return { discovered: 0 };
+  await enqueue(db, {
+    kind: "discover_profiles",
+    payload: { funnel: payload.funnel, candidates } satisfies DiscoverPayload,
+  });
+  return { discovered: candidates.length };
+}
+
+// ── score_lead ───────────────────────────────────────────────────────────────
+const QUALIFY_THRESHOLD_KEY = "leads.qualify_threshold";
+const OPENER_EXPERIMENT = "opener_copy_v1";
+
+export async function handleScoreLead(ctx: JobContext, payload: { leadId: number }) {
+  const { db } = ctx;
   const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
   if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);
-  if (lead.channelState !== "browser_contact_pending") {
-    return { skipped: `channel_state=${lead.channelState}` };
+  if (lead.pipelineStage !== "discovered") return { skipped: `stage=${lead.pipelineStage}` };
+
+  const business = loadBusiness();
+  const score = scoreLead(lead, business);
+  const priority = priorityFromScore(score.icpScore, score.actorType);
+  const tags = Array.from(new Set([...(lead.tags ?? []), ...score.matchedKeywords.slice(0, 3)]));
+
+  await db
+    .update(leads)
+    .set({
+      icpScore: score.icpScore,
+      actorType: score.actorType,
+      niche: score.niche,
+      tags,
+      priority,
+      publicSignals: { ...(lead.publicSignals ?? {}), scoreReasons: score.reasons },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(leads.id, lead.id));
+
+  await db.insert(schema.events).values({
+    leadId: lead.id,
+    type: "lead_scored",
+    data: { icpScore: score.icpScore, actorType: score.actorType, priority },
+  });
+
+  const threshold = await getSetting<number>(db, QUALIFY_THRESHOLD_KEY, 0.4);
+  if (score.icpScore < threshold) {
+    await db.insert(schema.decisionsLog).values({
+      leadId: lead.id,
+      actor: "ai",
+      decision: "hold",
+      rationale: `Score ${score.icpScore} < limiar ${threshold}. Não qualificar.`,
+      inputs: { reasons: score.reasons },
+    });
+    return { scored: score.icpScore, qualified: false };
   }
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "qualified", updatedAt: new Date().toISOString() })
+    .where(eq(leads.id, lead.id));
+
+  const variantId = (await assignVariant(db, OPENER_EXPERIMENT, lead.id)) ?? "opener_A";
+  const [fresh] = await db.select().from(leads).where(eq(leads.id, lead.id)).limit(1);
+  const message = await generateOpener({
+    funnel: lead.funnel,
+    displayName: fresh!.displayName,
+    igUsername: fresh!.igUsername,
+    bio: fresh!.bio,
+    category: fresh!.category,
+    location: fresh!.location,
+    niche: fresh!.niche,
+    variantId,
+    leadId: lead.id,
+  });
+
+  await enqueue(db, {
+    kind: "send_first_dm",
+    payload: { leadId: lead.id, message, variantId },
+    priority,
+    dedupeKey: `dm:${lead.id}`,
+  });
+
+  await db.insert(schema.decisionsLog).values({
+    leadId: lead.id,
+    actor: "ai",
+    decision: "qualify_and_queue_dm",
+    rationale: `Score ${score.icpScore} (${score.actorType}). Variante ${variantId}.`,
+  });
+
+  return { scored: score.icpScore, qualified: true, variantId };
+}
+
+// ── browser send (first DM + follow-up share this path) ──────────────────────
+type SendFirstDmPayload = { leadId: number; message: string; variantId?: string };
+type FollowupPayload = { leadId: number; kind: "browser" | "api" };
+
+async function runBrowserSend(
+  ctx: JobContext,
+  jobId: number,
+  opts: {
+    lead: schema.Lead;
+    message: string;
+    variantId?: string;
+    kind: "send_first_dm" | "send_followup";
+    requeuePayload: Record<string, unknown>;
+  },
+) {
+  const { db } = ctx;
+  const { lead } = opts;
 
   const breaker = await checkCircuitBreaker(db);
   if (breaker.tripped) {
@@ -105,12 +234,11 @@ export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPay
 
   const gate = await browserSendGate(db, { firstRunAt: await firstRunAt(db) });
   if (!gate.allowed) {
-    // Re-queue for later in the operating window.
     await enqueue(db, {
-      kind: "send_first_dm",
-      payload,
+      kind: opts.kind,
+      payload: opts.requeuePayload,
       runAt: new Date(Date.now() + 30 * 60_000),
-      dedupeKey: `dm:${payload.leadId}`,
+      dedupeKey: `${opts.kind === "send_followup" ? "fup" : "dm"}:${lead.id}`,
     });
     return { skipped: gate.reason };
   }
@@ -123,16 +251,16 @@ export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPay
       leadId: lead.id,
       profileUrl: lead.profileUrl,
       igUsername: lead.igUsername,
-      message: payload.message,
-      variantId: payload.variantId,
+      message: opts.message,
+      variantId: opts.variantId,
     });
 
     await db.insert(browserSendLog).values({
       leadId: lead.id,
       jobId,
       mode: env.BROWSER_SEND_MODE,
-      variantId: payload.variantId,
-      body: payload.message,
+      variantId: opts.variantId,
+      body: opts.message,
       result: result.status === "sent" ? "sent" : result.status === "blocked" ? "blocked" : "failed",
       screenshotPath: result.evidence.screenshotPath,
       accessibilitySnapshotPath: result.evidence.accessibilitySnapshotPath,
@@ -157,25 +285,94 @@ export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPay
       await recordOutbound(db, {
         leadId: lead.id,
         channel: "browser",
-        body: payload.message,
-        variantId: payload.variantId,
+        body: opts.message,
+        variantId: opts.variantId,
         externalId: `browser-job-${jobId}`,
       });
     } catch (e) {
       if (!(e instanceof DuplicateSendError)) throw e;
     }
     await incrementSendCounter(db, "browser");
-    await moveChannel(db, lead.id, "browser_contact_sent");
-    await moveChannel(db, lead.id, "waiting_inbound_reply");
-    await db
-      .update(leads)
-      .set({ pipelineStage: "contacted", updatedAt: new Date().toISOString() })
-      .where(eq(leads.id, lead.id));
 
-    // Human pace before the next browser job becomes eligible.
+    if (opts.kind === "send_first_dm") {
+      await moveChannel(db, lead.id, "browser_contact_sent");
+      await moveChannel(db, lead.id, "waiting_inbound_reply");
+      await db
+        .update(leads)
+        .set({ pipelineStage: "contacted", updatedAt: new Date().toISOString() })
+        .where(eq(leads.id, lead.id));
+      await recordOutcome(db, OPENER_EXPERIMENT, lead.id, "contacted");
+      // Schedule a single follow-up if no reply comes.
+      const days = await getSetting<number>(db, "followup.delay_days", 3);
+      await enqueue(db, {
+        kind: "send_followup",
+        payload: { leadId: lead.id, kind: "browser" } satisfies FollowupPayload,
+        runAt: new Date(Date.now() + days * 86_400_000),
+        dedupeKey: `fup:${lead.id}`,
+      });
+    }
+
     const wait = randomBetween(env.MIN_SECONDS_BETWEEN_DMS, env.MAX_SECONDS_BETWEEN_DMS);
-    log.info("dm.sent", { leadId: lead.id, nextEligibleInSec: wait });
+    log.info(opts.kind, { leadId: lead.id, nextEligibleInSec: wait });
     return { sent: true, cooldownSec: wait };
+  });
+}
+
+export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPayload, jobId: number) {
+  const { db } = ctx;
+  if (await isSystemPaused(db)) return { skipped: "system_paused" };
+
+  const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);
+  if (lead.channelState !== "browser_contact_pending") {
+    return { skipped: `channel_state=${lead.channelState}` };
+  }
+
+  return runBrowserSend(ctx, jobId, {
+    lead,
+    message: payload.message,
+    variantId: payload.variantId,
+    kind: "send_first_dm",
+    requeuePayload: payload as unknown as Record<string, unknown>,
+  });
+}
+
+// ── send_followup ────────────────────────────────────────────────────────────
+export async function handleSendFollowup(ctx: JobContext, payload: FollowupPayload, jobId: number) {
+  const { db } = ctx;
+  if (await isSystemPaused(db)) return { skipped: "system_paused" };
+
+  const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);
+
+  // Only follow up a thread that is still silent on the browser side.
+  if (lead.channelState !== "waiting_inbound_reply") {
+    return { skipped: `channel_state=${lead.channelState}` };
+  }
+
+  const [conv] = await db.select().from(conversations).where(eq(conversations.leadId, lead.id)).limit(1);
+  if (!conv) return { skipped: "no_conversation" };
+  if (conv.lastInboundAt) return { skipped: "already_replied" };
+
+  const threadMessages = await db.query.messages.findMany({
+    where: (m, { eq: e }) => e(m.conversationId, conv.id),
+  });
+  const outboundCount = threadMessages.filter((m) => m.direction === "outbound").length;
+  const maxFollowups = await getSetting<number>(db, "followup.max", 1);
+  // outboundCount already includes the first DM; allow up to maxFollowups extra.
+  if (outboundCount > maxFollowups) return { skipped: "followup_limit" };
+
+  const business = loadBusiness();
+  const nudge =
+    lead.funnel === "affiliate"
+      ? `Oi de novo! Só retomando — se fizer sentido conversarmos sobre o programa de afiliados da ${business.company.name}, é só me chamar. Sem problema se não for o momento.`
+      : `Oi! Passando pra retomar. Se quiser, te mostro rapidinho um caso da ${business.company.name} — e se não for a hora, tudo certo, é só avisar.`;
+
+  return runBrowserSend(ctx, jobId, {
+    lead,
+    message: nudge,
+    kind: "send_followup",
+    requeuePayload: payload as unknown as Record<string, unknown>,
   });
 }
 
@@ -219,6 +416,8 @@ export async function handleProcessInbound(ctx: JobContext, payload: ProcessInbo
     .update(leads)
     .set({ pipelineStage: "replied", updatedAt: new Date().toISOString() })
     .where(eq(leads.id, leadId));
+  await recordOutcome(db, OPENER_EXPERIMENT, leadId, "replied");
+  await db.insert(schema.events).values({ leadId, type: "inbound_reply", data: {} });
 
   const history = await conversationHistory(db, conv.id);
   const { intent } = await classifyIntent(payload.text, { funnel: lead.funnel, history }, leadId);
@@ -253,6 +452,21 @@ export async function handleProcessInbound(ctx: JobContext, payload: ProcessInbo
     await moveChannel(db, leadId, "human_review_required");
     await db.insert(schema.exceptions).values({ leadId, kind: "needs_human", detail: decision.rationale });
     return { matched: true, intent, action: decision.action };
+  }
+
+  if (decision.action === "forward_whatsapp") {
+    const stage = lead.funnel === "customer" ? "whatsapp_handoff" : "interested";
+    await db
+      .update(leads)
+      .set({ pipelineStage: stage, updatedAt: new Date().toISOString() })
+      .where(eq(leads.id, leadId));
+    await recordOutcome(db, OPENER_EXPERIMENT, leadId, stage);
+    await db.insert(schema.events).values({ leadId, type: "whatsapp_handoff", data: { funnel: lead.funnel } });
+  } else if (["present", "handle_objection", "ask"].includes(decision.action)) {
+    await db
+      .update(leads)
+      .set({ pipelineStage: "interested", updatedAt: new Date().toISOString() })
+      .where(eq(leads.id, leadId));
   }
 
   if (decision.message) {

@@ -49,7 +49,7 @@ const CUSTOMER_TRANSITIONS: Record<CustomerStage, CustomerStage[]> = {
   discovered: ["qualified", "closed"],
   qualified: ["contacted", "closed"],
   contacted: ["replied", "closed"],
-  replied: ["interested", "closed"],
+  replied: ["interested", "whatsapp_handoff", "closed"],
   interested: ["whatsapp_handoff", "closed"],
   whatsapp_handoff: ["registered", "closed"],
   registered: ["active_customer", "closed"],

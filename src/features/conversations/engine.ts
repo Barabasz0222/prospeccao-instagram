@@ -2,7 +2,7 @@ import "@/lib/server-only-shim";
 import { z } from "zod";
 import { complete, isOfflineMode } from "@/integrations/openai/client";
 import { assertOutboundText, checkOutboundText } from "@/lib/claims";
-import { loadBusiness } from "@/lib/business";
+import { loadBusiness, type Business } from "@/lib/business";
 import { normalize } from "@/lib/text";
 
 export const INTENTS = [
@@ -224,4 +224,71 @@ function extractJson(s: string): string {
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   return start >= 0 && end > start ? s.slice(start, end + 1) : s;
+}
+
+// ── Opening message ─────────────────────────────────────────────────────────
+export type OpenerInput = {
+  funnel: "customer" | "affiliate";
+  displayName: string | null;
+  igUsername: string;
+  bio: string | null;
+  category: string | null;
+  location: string | null;
+  niche: string | null;
+  variantId: string;
+  leadId?: number;
+};
+
+/**
+ * Short, personal, true opener grounded in the real profile. Never a campaign
+ * blast, never a false claim. Offline mode uses templates; both paths pass the
+ * verified-claims guard.
+ */
+export async function generateOpener(input: OpenerInput): Promise<string> {
+  const business = loadBusiness();
+  const ref =
+    input.niche ??
+    input.category ??
+    (input.bio ? input.bio.split(/[.·|\n]/)[0]?.trim() ?? null : null);
+
+  let text: string;
+  if (isOfflineMode()) {
+    text = offlineOpener(input, ref, business);
+  } else {
+    const res = await complete({
+      purpose: "generate_opener",
+      leadId: input.leadId,
+      maxTokens: 220,
+      system: [
+        `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
+        "Curta (1-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
+        "Só pode afirmar o que está aqui:",
+        business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
+        "Sem taxa, número, garantia, superlativo. Não peça dados. Termine com uma pergunta leve.",
+        input.funnel === "affiliate"
+          ? "Contexto: convite para o programa de afiliados."
+          : "Contexto: apresentar a empresa e sondar interesse.",
+        "Responda só com o texto da mensagem.",
+      ].join("\n"),
+      messages: [
+        {
+          role: "user",
+          content: `Perfil @${input.igUsername} — nome: ${input.displayName ?? "?"} · bio: ${input.bio ?? "?"} · categoria: ${input.category ?? "?"} · local: ${input.location ?? "?"}`,
+        },
+      ],
+    });
+    text = res.text.trim();
+  }
+
+  assertOutboundText(text);
+  return text;
+}
+
+function offlineOpener(input: OpenerInput, ref: string | null, business: Business): string {
+  const who = input.displayName ? input.displayName : `@${input.igUsername}`;
+  const place = input.location ? ` em ${input.location.split(",")[0]}` : "";
+  if (input.funnel === "affiliate") {
+    return `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou da ${business.company.name} — ${business.owner.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`;
+  }
+  return `Oi! Vi o perfil de ${who}${ref ? ` (${ref})` : ""}${place}. Sou ${business.owner.name}, da ${business.company.name} — a gente desenvolve sistemas e automações sob medida, e tem um SaaS de gestão de obras já em uso real. Faz sentido eu te mostrar um caso rápido?`;
 }

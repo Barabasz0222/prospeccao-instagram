@@ -1,7 +1,8 @@
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import {
   aiCalls,
+  decisionsLog,
   events,
   exceptions,
   jobs,
@@ -18,6 +19,8 @@ export type DashboardSummary = {
   costPerLeadUsd: number | null;
   costPerActiveCustomerUsd: number | null;
   repliesLast7d: number;
+  jobsByKind: { kind: string; status: string; n: number }[];
+  recentDecisions: { at: string; leadId: number | null; decision: string; rationale: string | null }[];
 };
 
 function tally(rows: { k: string | null; n: number }[]): Record<string, number> {
@@ -72,9 +75,31 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     .from(events)
     .where(sql`${events.type} = 'inbound_reply' AND ${events.occurredAt} >= datetime('now','-7 days')`);
 
+  const jobsByKind = (
+    await db
+      .select({ kind: jobs.kind, status: jobs.status, n: sql<number>`count(*)` })
+      .from(jobs)
+      .groupBy(jobs.kind, jobs.status)
+  ).map((r) => ({ kind: r.kind, status: r.status, n: Number(r.n) }));
+
+  const recentDecisions = (
+    await db
+      .select({
+        at: decisionsLog.createdAt,
+        leadId: decisionsLog.leadId,
+        decision: decisionsLog.decision,
+        rationale: decisionsLog.rationale,
+      })
+      .from(decisionsLog)
+      .orderBy(desc(decisionsLog.createdAt))
+      .limit(12)
+  );
+
   return {
     leadsByStage: tally(byStage),
     leadsByChannel: tally(byChannel),
+    jobsByKind,
+    recentDecisions,
     openExceptions: Number(openExc),
     pendingJobs: Number(pending),
     deadJobs: Number(dead),

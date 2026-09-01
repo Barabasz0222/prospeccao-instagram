@@ -1,0 +1,26 @@
+import {
+  handleDiscoverFromKeywords,
+  handleDiscoverProfiles,
+  handleProcessInbound,
+  handleScoreLead,
+  handleSendFirstDm,
+  handleSendFollowup,
+  type JobContext,
+} from "./handlers";
+import { backupDatabase } from "@/db/backup-runner";
+
+export type JobHandler = (
+  ctx: JobContext,
+  payload: Record<string, unknown>,
+  jobId: number,
+) => Promise<unknown>;
+
+export const HANDLERS: Record<string, JobHandler> = {
+  discover_from_keywords: (c, p) => handleDiscoverFromKeywords(c, p as never),
+  discover_profiles: (c, p) => handleDiscoverProfiles(c, p as never),
+  score_lead: (c, p) => handleScoreLead(c, p as never),
+  send_first_dm: (c, p, id) => handleSendFirstDm(c, p as never, id),
+  send_followup: (c, p, id) => handleSendFollowup(c, p as never, id),
+  process_inbound: (c, p) => handleProcessInbound(c, p as never),
+  backup_db: async () => ({ dest: backupDatabase() }),
+};

@@ -6,6 +6,8 @@ import { log } from "@/lib/logger";
 import { randomBetween } from "@/lib/time";
 import type {
   BrowserDriver,
+  DiscoveredProfile,
+  DiscoverQuery,
   SendDmEvidence,
   SendDmInput,
   SendDmResult,
@@ -52,6 +54,52 @@ export class CdpBrowserDriver implements BrowserDriver {
     } catch (e) {
       return { ok: false, reason: e instanceof Error ? e.message : String(e) };
     } finally {
+      await browser?.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Best-effort public discovery. Instagram's DOM changes often, so selectors
+   * here are a starting point the operator tunes against the live site during
+   * the dry-run phase. Read-only: navigates, reads handles, never interacts.
+   */
+  async discoverProfiles(query: DiscoverQuery): Promise<DiscoveredProfile[]> {
+    let browser: Browser | null = null;
+    let page: Page | null = null;
+    try {
+      browser = await this.connect();
+      const context = browser.contexts()[0];
+      if (!context) throw new Error("nenhum contexto logado no Chrome");
+      page = await context.newPage();
+
+      const url =
+        query.kind === "hashtag"
+          ? `https://www.${IG_HOST}/explore/tags/${encodeURIComponent(query.term.replace(/^#/, ""))}/`
+          : `https://www.${IG_HOST}/explore/search/keyword/?q=${encodeURIComponent(query.term)}`;
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      if (page.url().includes("/accounts/login")) return [];
+
+      const handles = await page.evaluate((max: number) => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const a of Array.from(document.querySelectorAll('a[href^="/"]'))) {
+          const href = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+          const m = href.match(/^\/([A-Za-z0-9._]+)\/?$/);
+          if (m && m[1] && !["explore", "reels", "p", "accounts"].includes(m[1]) && !seen.has(m[1])) {
+            seen.add(m[1]);
+            out.push(m[1]);
+            if (out.length >= max) break;
+          }
+        }
+        return out;
+      }, query.limit);
+
+      return handles.map((h) => ({ igUsername: h, profileUrl: `https://www.${IG_HOST}/${h}/` }));
+    } catch (e) {
+      log.warn("browser.discover_failed", { error: e instanceof Error ? e.message : String(e) });
+      return [];
+    } finally {
+      await page?.close().catch(() => {});
       await browser?.close().catch(() => {});
     }
   }
