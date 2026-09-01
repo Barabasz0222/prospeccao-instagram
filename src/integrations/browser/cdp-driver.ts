@@ -32,8 +32,8 @@ function expandCount(s: string): number | null {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-function jsonStr(html: string, key: string): string | null {
-  const m = html.match(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`));
+function jsonStr(hay: string, key: string): string | null {
+  const m = hay.match(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`));
   if (!m) return null;
   try {
     return JSON.parse(`"${m[1]}"`);
@@ -42,24 +42,55 @@ function jsonStr(html: string, key: string): string | null {
   }
 }
 
-function jsonNum(html: string, path: string): number | null {
-  const m = html.match(new RegExp(`"${path}":\\{"count":(\\d+)`));
+function jsonNum(hay: string, path: string): number | null {
+  const m =
+    hay.match(new RegExp(`"${path}":\\{"count":(\\d+)`)) ?? hay.match(new RegExp(`"${path}":(\\d+)`));
   return m ? Number(m[1]) : null;
 }
 
-function jsonBool(html: string, key: string): boolean {
-  return new RegExp(`"${key}":true`).test(html);
-}
-
-/** Extract public profile signals from the serialized data in the page HTML. */
+/**
+ * Extract public profile signals. The HTML also carries the *logged-in
+ * viewer's* data, so bio/category/counts are read from a window anchored on
+ * this profile's own `"username":"<handle>"`, and name/counts are cross-checked
+ * against the og: meta tags (always about the viewed profile).
+ */
 function parseProfileHtml(handle: string, html: string): ProfileSignals {
-  const bio = jsonStr(html, "biography");
-  const category = jsonStr(html, "category_name") ?? jsonStr(html, "category");
-  const displayName = jsonStr(html, "full_name");
-  const externalUrl = jsonStr(html, "external_url");
-  const followerCount = jsonNum(html, "edge_followed_by") ?? jsonNum(html, "follower_count");
-  const followingCount = jsonNum(html, "edge_follow") ?? jsonNum(html, "following_count");
-  const postCount = jsonNum(html, "edge_owner_to_timeline_media") ?? jsonNum(html, "media_count");
+  const h = handle.toLowerCase();
+
+  // Window around the target profile's own record.
+  let scope = html;
+  const at = html.toLowerCase().indexOf(`"username":"${h}"`);
+  if (at >= 0) scope = html.slice(Math.max(0, at - 40_000), at + 40_000);
+
+  const ogTitle = html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1] ?? "";
+  const ogDesc = html.match(/<meta property="og:description" content="([^"]+)"/i)?.[1] ?? "";
+
+  let displayName = jsonStr(scope, "full_name");
+  if (!displayName) {
+    const t = ogTitle.match(/^(.*?)\s*\(@/);
+    displayName = t ? t[1]!.trim() : null;
+  }
+
+  const bio = jsonStr(scope, "biography");
+  const category = jsonStr(scope, "category_name") ?? jsonStr(scope, "category");
+  const externalUrl = jsonStr(scope, "external_url");
+
+  let followerCount = jsonNum(scope, "edge_followed_by") ?? jsonNum(scope, "follower_count");
+  if (followerCount == null) {
+    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Followers/);
+    if (fm) followerCount = expandCount(fm[1]!);
+  }
+  let followingCount = jsonNum(scope, "edge_follow") ?? jsonNum(scope, "following_count");
+  if (followingCount == null) {
+    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Following/);
+    if (fm) followingCount = expandCount(fm[1]!);
+  }
+  let postCount = jsonNum(scope, "edge_owner_to_timeline_media") ?? jsonNum(scope, "media_count");
+  if (postCount == null) {
+    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Posts/);
+    if (fm) postCount = expandCount(fm[1]!);
+  }
+
   const bioHashtags = Array.from((bio ?? "").matchAll(/#([\p{L}0-9_]+)/gu)).map((m) => m[1]!);
 
   return {
@@ -73,8 +104,8 @@ function parseProfileHtml(handle: string, html: string): ProfileSignals {
     followingCount,
     postCount,
     externalUrl: externalUrl || null,
-    isPrivate: jsonBool(html, "is_private"),
-    isVerified: jsonBool(html, "is_verified"),
+    isPrivate: new RegExp(`"is_private":true`).test(scope),
+    isVerified: new RegExp(`"is_verified":true`).test(scope),
     bioHashtags,
   };
 }
@@ -272,13 +303,6 @@ export class CdpBrowserDriver implements BrowserDriver {
       // into the page HTML. Read it from the rendered document — no API call.
       const html = await page.content();
       const signals = parseProfileHtml(handle, html);
-
-      // Meta-tag fallback for follower counts when the JSON blob is absent.
-      if (signals.followerCount == null) {
-        const og = html.match(/<meta property="og:description" content="([^"]+)"/i)?.[1] ?? "";
-        const fm = og.match(/([\d.,]+[KMkm]?)\s+Followers/);
-        if (fm) signals.followerCount = expandCount(fm[1]!);
-      }
 
       if (this.debugDump) {
         mkdirSync(EVIDENCE_DIR, { recursive: true });

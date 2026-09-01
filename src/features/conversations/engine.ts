@@ -251,37 +251,36 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
     input.category ??
     (input.bio ? input.bio.split(/[.·|\n]/)[0]?.trim() ?? null : null);
 
-  let text: string;
-  if (isOfflineMode()) {
-    text = offlineOpener(input, ref, business);
-  } else {
+  const offline = offlineOpener(input, ref, business);
+  if (isOfflineMode()) return offline;
+
+  const system = [
+    `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
+    "Curta (1-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
+    "PROIBIDO afirmar qualquer coisa fora desta lista literal:",
+    business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
+    "Nunca prometa aumento de faturamento, redução de custo/tempo, ROI, resultado financeiro, número, taxa, garantia ou superlativo. Não peça dados. Termine com uma pergunta leve.",
+    input.funnel === "affiliate"
+      ? "Contexto: convite para o programa de afiliados."
+      : "Contexto: apresentar a empresa e sondar interesse.",
+    "Responda só com o texto da mensagem.",
+  ].join("\n");
+  const userMsg = `Perfil @${input.igUsername} — nome: ${input.displayName ?? "?"} · bio: ${input.bio ?? "?"} · categoria: ${input.category ?? "?"} · local: ${input.location ?? "?"}`;
+
+  // Up to 2 attempts; the verified-claims guard is the backstop. On repeated
+  // violation, fall back to the safe template — never throw, never block the job.
+  for (let attempt = 0; attempt < 2; attempt++) {
     const res = await complete({
       purpose: "generate_opener",
       leadId: input.leadId,
       maxTokens: 220,
-      system: [
-        `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
-        "Curta (1-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
-        "Só pode afirmar o que está aqui:",
-        business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
-        "Sem taxa, número, garantia, superlativo. Não peça dados. Termine com uma pergunta leve.",
-        input.funnel === "affiliate"
-          ? "Contexto: convite para o programa de afiliados."
-          : "Contexto: apresentar a empresa e sondar interesse.",
-        "Responda só com o texto da mensagem.",
-      ].join("\n"),
-      messages: [
-        {
-          role: "user",
-          content: `Perfil @${input.igUsername} — nome: ${input.displayName ?? "?"} · bio: ${input.bio ?? "?"} · categoria: ${input.category ?? "?"} · local: ${input.location ?? "?"}`,
-        },
-      ],
+      system: attempt === 0 ? system : `${system}\nSua última resposta violou a regra. Reescreva sem nenhuma promessa de resultado.`,
+      messages: [{ role: "user", content: userMsg }],
     });
-    text = res.text.trim();
+    const text = res.text.trim();
+    if (checkOutboundText(text).ok) return text;
   }
-
-  assertOutboundText(text);
-  return text;
+  return offline;
 }
 
 function offlineOpener(input: OpenerInput, ref: string | null, business: Business): string {
