@@ -23,6 +23,7 @@
     "db:backup": "tsx src/db/backup.ts",
     "db:restore": "tsx scripts/restore-backup.ts",
     "add-leads": "tsx scripts/add-leads.ts",
+    "inspect-enrich": "tsx scripts/inspect-enrich.ts",
     "seed": "tsx scripts/seed-demo.ts",
     "drain": "tsx scripts/drain-once.ts",
     "sim": "tsx scripts/e2e-sim.ts",
