@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeTestDb } from "@/db/test-helpers";
-import { claimNext, enqueue, failJob, recoverStaleJobs } from "./queue";
+import { claimNext, completeJob, enqueue, failJob, recoverStaleJobs } from "./queue";
 
 describe("job queue", () => {
   it("enqueues and claims exactly once", async () => {
@@ -12,12 +12,21 @@ describe("job queue", () => {
     expect(b).toBeNull();
   });
 
-  it("honours the dedupe key", async () => {
+  it("honours the dedupe key while a job is unfinished", async () => {
     const { db } = await makeTestDb();
     const first = await enqueue(db, { kind: "dm", payload: {}, dedupeKey: "lead:7" });
     const second = await enqueue(db, { kind: "dm", payload: {}, dedupeKey: "lead:7" });
     expect(first).not.toBeNull();
     expect(second).toBeNull();
+  });
+
+  it("lets a dedupe key be re-enqueued after the earlier job finishes", async () => {
+    const { db } = await makeTestDb();
+    const id = (await enqueue(db, { kind: "dm", payload: {}, dedupeKey: "lead:9" }))!;
+    await claimNext(db, "w1");
+    await completeJob(db, id);
+    const again = await enqueue(db, { kind: "dm", payload: {}, dedupeKey: "lead:9" });
+    expect(again).not.toBeNull();
   });
 
   it("dead-letters after max attempts", async () => {

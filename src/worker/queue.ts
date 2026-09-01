@@ -31,8 +31,11 @@ export async function enqueue(db: Db, args: EnqueueArgs): Promise<number | null>
       })
       .returning({ id: jobs.id });
     return row!.id;
-  } catch {
-    return null; // dedupeKey collision — already queued
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // An unfinished job with this dedupeKey already exists — that's the point.
+    if (/unique|constraint/i.test(msg)) return null;
+    throw e;
   }
 }
 

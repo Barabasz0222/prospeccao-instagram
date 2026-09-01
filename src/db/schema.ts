@@ -150,7 +150,11 @@ export const jobs = sqliteTable(
     ...timestamps,
   },
   (t) => ({
-    uxDedupe: uniqueIndex("ux_jobs_dedupe_key").on(t.dedupeKey),
+    // Partial: a dedupeKey blocks only an *unfinished* duplicate, so the same
+    // key can be re-enqueued once the earlier job has completed/failed/died.
+    uxDedupe: uniqueIndex("ux_jobs_dedupe_key")
+      .on(t.dedupeKey)
+      .where(sql`${t.dedupeKey} is not null and ${t.status} in ('pending','running')`),
     ixPoll: index("ix_jobs_poll").on(t.status, t.runAt, t.priority),
   }),
 );

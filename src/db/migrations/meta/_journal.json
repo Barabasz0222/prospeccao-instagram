@@ -8,6 +8,13 @@
       "when": 1788209628929,
       "tag": "0000_broken_typhoid_mary",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788224831415,
+      "tag": "0001_melted_invaders",
+      "breakpoints": true
     }
   ]
 }

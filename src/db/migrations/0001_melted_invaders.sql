@@ -1,0 +1,2 @@
+DROP INDEX `ux_jobs_dedupe_key`;--> statement-breakpoint
+CREATE UNIQUE INDEX `ux_jobs_dedupe_key` ON `jobs` (`dedupe_key`) WHERE "jobs"."dedupe_key" is not null and "jobs"."status" in ('pending','running');
