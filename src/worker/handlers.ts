@@ -59,7 +59,9 @@ export async function handleDiscoverProfiles(ctx: JobContext, payload: DiscoverP
   let created = 0;
   let duplicate = 0;
   let blocked = 0;
+  const ownHandle = loadBusiness().company.instagramHandle.toLowerCase().replace(/^@/, "");
   for (const c of payload.candidates) {
+    if (c.igUsername.toLowerCase().replace(/^@/, "") === ownHandle) continue; // skip our own account
     const res = await discoverLead(ctx.db, {
       funnel: payload.funnel,
       igUsername: c.igUsername,

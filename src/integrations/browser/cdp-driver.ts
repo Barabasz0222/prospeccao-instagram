@@ -207,29 +207,39 @@ export class CdpBrowserDriver implements BrowserDriver {
       }
       await page.waitForTimeout(randomBetween(600, 1600));
 
+      // NOTE: no inner functions in this callback — esbuild's keepNames helper
+      // (`__name`) is not defined in the page context and would throw.
       const raw = await page.evaluate(() => {
-        const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? null;
         const header = document.querySelector("header");
-        const headerText = header?.textContent ?? "";
+        const headerText = header ? header.textContent || "" : "";
 
-        // Follower/following/posts from the counts row (order is posts, followers, following).
         const nums: string[] = [];
-        for (const el of Array.from(header?.querySelectorAll("li, span[title], button span") ?? [])) {
-          const t = el.textContent?.trim() ?? "";
+        const countEls = header ? header.querySelectorAll("li, span[title], button span") : [];
+        for (let i = 0; i < countEls.length; i++) {
+          const t = (countEls[i]!.textContent || "").trim();
           if (/^[\d.,]+\s*(mil|mi|k|m)?\b/i.test(t) || /^\d[\d.,]*$/.test(t)) nums.push(t);
         }
-        const titleAttr = header?.querySelector("span[title]")?.getAttribute("title") ?? null;
+        const titleEl = header ? header.querySelector("span[title]") : null;
+        const titleAttr = titleEl ? titleEl.getAttribute("title") : null;
 
-        const bio =
-          text("header h1 + div") ??
-          text('header section > div:nth-child(3)') ??
-          text("header section div span");
-        const displayName = text("header h1") ?? text("header h2") ?? null;
-        const externalUrl =
-          (header?.querySelector('a[href^="https://l.instagram.com"], a[rel~="me"]') as HTMLAnchorElement | null)?.href ??
-          null;
-        const category = text('header a[href*="/explore/"]') ?? null;
+        let bio: string | null = null;
+        for (const sel of ["header h1 + div", "header section > div:nth-child(3)", "header section div span"]) {
+          const el = document.querySelector(sel);
+          const v = el && el.textContent ? el.textContent.trim() : "";
+          if (v && !bio) bio = v;
+        }
+        const nameEl = document.querySelector("header h1") || document.querySelector("header h2");
+        const displayName = nameEl && nameEl.textContent ? nameEl.textContent.trim() : null;
 
+        const linkEl = header
+          ? (header.querySelector('a[href^="https://l.instagram.com"], a[rel~="me"]') as HTMLAnchorElement | null)
+          : null;
+        const externalUrl = linkEl ? linkEl.href : null;
+
+        const catEl = document.querySelector('header a[href*="/explore/"]');
+        const category = catEl && catEl.textContent ? catEl.textContent.trim() : null;
+
+        const bodyText = document.body.textContent || "";
         return {
           displayName,
           bio,
@@ -238,8 +248,8 @@ export class CdpBrowserDriver implements BrowserDriver {
           headerText,
           nums,
           titleAttr,
-          isPrivate: /this account is private|conta é privada/i.test(document.body.textContent ?? ""),
-          isVerified: !!header?.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Verificado"]'),
+          isPrivate: /this account is private|conta é privada/i.test(bodyText),
+          isVerified: !!(header && header.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Verificado"]')),
         };
       });
 
