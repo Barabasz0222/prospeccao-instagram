@@ -32,8 +32,11 @@ function expandCount(s: string): number | null {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-const BUTTON_LINES = /^(seguir|following|seguindo|mensagem|message|contato|contact|inscrever|subscribe|mais|more|\.\.\.|editar perfil|edit profile)$/i;
+const BUTTON_LINES =
+  /^(seguir|following|seguindo|mensagem|message|enviar mensagem|send message|contato|contact|inscrever|subscribe|mais|more|ver mais|\.{2,}|editar perfil|edit profile|promover|promote|e-mail|email|ligar|call)$/i;
 const COUNT_LINE = /(seguidor|seguindo|publica|post|follower|following)/i;
+// A line that is only emoji / punctuation carries no signal.
+const NOISE_LINE = /^[\p{P}\p{S}\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u;
 
 /**
  * og: meta tags are the reliable source for the VIEWED profile's name and
@@ -68,12 +71,18 @@ function parseProfile(handle: string, html: string, headerText: string): Profile
         !junk.has(l.toLowerCase()) &&
         !BUTTON_LINES.test(l) &&
         !COUNT_LINE.test(l) &&
+        !NOISE_LINE.test(l) &&
         !/^\d[\d.,]*\s*(mil|mi|k|m)?$/i.test(l),
     );
   // First short line is usually the business category; the rest is the bio.
   let category: string | null = null;
   let bioLines = lines;
-  if (lines.length > 1 && lines[0]!.length <= 40 && !lines[0]!.includes("http")) {
+  if (
+    lines.length > 1 &&
+    lines[0]!.length <= 40 &&
+    !/https?:|www\.|🔗|linktr|@/.test(lines[0]!) &&
+    lines[0]!.toLowerCase() !== (displayName ?? "").toLowerCase()
+  ) {
     category = lines[0]!;
     bioLines = lines.slice(1);
   }
