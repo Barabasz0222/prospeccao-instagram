@@ -1,0 +1,227 @@
+import "@/lib/server-only-shim";
+import { z } from "zod";
+import { complete, isOfflineMode } from "@/integrations/openai/client";
+import { assertOutboundText, checkOutboundText } from "@/lib/claims";
+import { loadBusiness } from "@/lib/business";
+import { normalize } from "@/lib/text";
+
+export const INTENTS = [
+  "interested",
+  "asked_info",
+  "asked_pricing",
+  "wants_whatsapp",
+  "not_the_owner",
+  "will_forward",
+  "objection",
+  "not_interested",
+  "opt_out",
+  "ambiguous",
+  "needs_human",
+] as const;
+export type Intent = (typeof INTENTS)[number];
+
+export const ACTIONS = [
+  "reply",
+  "ask",
+  "present",
+  "handle_objection",
+  "forward_whatsapp",
+  "wait",
+  "schedule_followup",
+  "close",
+  "escalate_human",
+] as const;
+export type Action = (typeof ACTIONS)[number];
+
+const OPT_OUT_PHRASES = [
+  "nao quero",
+  "para de",
+  "pare de",
+  "nao me manda",
+  "sai fora",
+  "descadastr",
+  "remove meu contato",
+  "nao tenho interesse e nao quero mais",
+  "spam",
+];
+
+/** Deterministic opt-out detection runs before any model call. */
+export function detectOptOut(text: string): boolean {
+  const n = normalize(text);
+  return OPT_OUT_PHRASES.some((p) => n.includes(p));
+}
+
+const classificationSchema = z.object({
+  intent: z.enum(INTENTS),
+  confidence: z.number().min(0).max(1),
+});
+
+export async function classifyIntent(
+  text: string,
+  context: { funnel: "customer" | "affiliate"; history: string },
+  leadId?: number,
+): Promise<{ intent: Intent; confidence: number }> {
+  if (detectOptOut(text)) return { intent: "opt_out", confidence: 1 };
+  if (isOfflineMode()) return { intent: heuristicIntent(text), confidence: 0.5 };
+
+  const res = await complete({
+    purpose: "classify_intent",
+    fast: true,
+    leadId,
+    maxTokens: 120,
+    system:
+      "Você classifica a intenção da última mensagem de um lead numa conversa de prospecção. " +
+      `Responda APENAS com JSON {"intent": <um de ${INTENTS.join("|")}>, "confidence": 0..1}.`,
+    messages: [
+      {
+        role: "user",
+        content: `Funil: ${context.funnel}\nHistórico:\n${context.history}\n\nÚltima mensagem do lead:\n${text}`,
+      },
+    ],
+  });
+
+  try {
+    const parsed = classificationSchema.parse(JSON.parse(extractJson(res.text)));
+    return parsed;
+  } catch {
+    return { intent: "ambiguous", confidence: 0 };
+  }
+}
+
+const decisionSchema = z.object({
+  action: z.enum(ACTIONS),
+  message: z.string().optional(),
+  rationale: z.string(),
+});
+
+export type Decision = z.infer<typeof decisionSchema>;
+
+export async function decideReply(args: {
+  intent: Intent;
+  funnel: "customer" | "affiliate";
+  history: string;
+  profileSummary: string;
+  leadId?: number;
+}): Promise<Decision> {
+  const business = loadBusiness();
+
+  if (args.intent === "opt_out") {
+    return { action: "close", rationale: "Lead pediu para parar; entra em do_not_contact." };
+  }
+
+  if (isOfflineMode()) {
+    const d = offlineDecision(args.intent, args.funnel);
+    if (d.message) assertOutboundText(d.message);
+    return d;
+  }
+
+  const target =
+    args.funnel === "customer"
+      ? business.links.whatsapp
+      : (business.links.affiliateGroup ?? business.links.whatsapp);
+
+  const res = await complete({
+    purpose: "decide_reply",
+    leadId: args.leadId,
+    maxTokens: 500,
+    system: [
+      `Você é o assistente comercial da ${business.company.name}, representando ${business.owner.name} (${business.owner.role}).`,
+      `Pitch: ${business.pitch.oneLine}`,
+      "REGRA DE AFIRMAÇÕES: só pode afirmar o que está nesta lista literal de afirmações verificadas:",
+      business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
+      "Nunca invente taxa, número, garantia, superlativo, relação societária. Nunca prometa aprovação de conta ou resultado financeiro.",
+      "A conversa deve parecer pessoal, não campanha. Nunca finja ser cliente.",
+      `Quando o lead demonstrar interesse real, encaminhe para: ${target}`,
+      `Responda APENAS com JSON {"action": <um de ${ACTIONS.join("|")}>, "message": <texto em pt-BR, opcional>, "rationale": <curto>}.`,
+    ].join("\n"),
+    messages: [
+      {
+        role: "user",
+        content: `Funil: ${args.funnel}\nIntenção detectada: ${args.intent}\nPerfil do lead: ${args.profileSummary}\nHistórico:\n${args.history}`,
+      },
+    ],
+  });
+
+  let decision: Decision;
+  try {
+    decision = decisionSchema.parse(JSON.parse(extractJson(res.text)));
+  } catch {
+    return { action: "escalate_human", rationale: "Não consegui interpretar a decisão do modelo." };
+  }
+
+  // Verified-claims gate on any outbound text.
+  if (decision.message) {
+    const check = checkOutboundText(decision.message);
+    if (!check.ok) {
+      return {
+        action: "escalate_human",
+        rationale: `Mensagem gerada violou a regra de afirmações (${check.reason}).`,
+      };
+    }
+    assertOutboundText(decision.message);
+  }
+  return decision;
+}
+
+// ── Offline heuristics (simulation / CI, no LLM) ─────────────────────────────
+function heuristicIntent(text: string): Intent {
+  const n = normalize(text);
+  if (/(preco|valor|quanto custa|mensalidade|orcamento)/.test(n)) return "asked_pricing";
+  if (/(whats|whatsapp|zap|chama no)/.test(n)) return "wants_whatsapp";
+  if (/(nao sou|falar com o dono|responsavel|gerente)/.test(n)) return "not_the_owner";
+  if (/(vou repassar|encaminho|passo pro)/.test(n)) return "will_forward";
+  if (/(nao tenho interesse|nao preciso|ja tenho)/.test(n)) return "not_interested";
+  if (/(caro|sem tempo|nao sei|depois eu vejo)/.test(n)) return "objection";
+  if (/(quero saber|como funciona|me explica|mais informacoes|interesse|gostei)/.test(n))
+    return "interested";
+  return "ambiguous";
+}
+
+function offlineDecision(intent: Intent, funnel: "customer" | "affiliate"): Decision {
+  const business = loadBusiness();
+  const target =
+    funnel === "customer"
+      ? business.links.whatsapp
+      : (business.links.affiliateGroup ?? business.links.whatsapp);
+  switch (intent) {
+    case "opt_out":
+      return { action: "close", rationale: "Opt-out." };
+    case "not_the_owner":
+      return {
+        action: "ask",
+        message: "Sem problema! Você consegue me indicar quem cuida disso aí?",
+        rationale: "Pedir contato do decisor.",
+      };
+    case "wants_whatsapp":
+    case "asked_pricing":
+    case "interested":
+      return {
+        action: "forward_whatsapp",
+        message: `Show! Consigo te dar os detalhes por aqui: ${target}`,
+        rationale: "Lead demonstrou interesse — encaminhar.",
+      };
+    case "objection":
+      return {
+        action: "handle_objection",
+        message:
+          "Entendo. A ideia não é te tomar tempo — em poucos minutos dá pra ver se faz sentido pro seu caso.",
+        rationale: "Tratar objeção leve.",
+      };
+    case "not_interested":
+      return { action: "close", rationale: "Sem interesse." };
+    case "will_forward":
+      return {
+        action: "reply",
+        message: "Perfeito, obrigado! Fico à disposição se surgir dúvida.",
+        rationale: "Agradecer encaminhamento.",
+      };
+    default:
+      return { action: "escalate_human", rationale: "Intenção ambígua — revisão humana." };
+  }
+}
+
+function extractJson(s: string): string {
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  return start >= 0 && end > start ? s.slice(start, end + 1) : s;
+}

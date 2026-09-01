@@ -1,0 +1,288 @@
+import { eq } from "drizzle-orm";
+import type { LibSQLDatabase } from "drizzle-orm/libsql";
+import { browserSendLog, conversations, leads } from "@/db/schema";
+import * as schema from "@/db/schema";
+import { discoverLead } from "@/features/leads/repo";
+import {
+  DuplicateSendError,
+  handleInboundReply,
+  moveChannel,
+  recordOutbound,
+} from "@/features/conversations/repo";
+import { classifyIntent, decideReply } from "@/features/conversations/engine";
+import { getBrowserDriver } from "@/integrations/browser";
+import { sendApiMessage } from "@/integrations/instagram/api";
+import { getSetting, isSystemPaused, setSetting } from "@/features/settings/repo";
+import { loadEnv } from "@/lib/env";
+import { log } from "@/lib/logger";
+import { browserMutex } from "@/lib/mutex";
+import { randomBetween } from "@/lib/time";
+import { browserSendGate, incrementSendCounter } from "./rate-limit";
+import { checkCircuitBreaker, raiseAlert, tripAndPause } from "./safety";
+import { enqueue } from "./queue";
+
+type Db = LibSQLDatabase<typeof schema>;
+
+export type JobContext = { db: Db; workerId: string };
+
+const FIRST_RUN_KEY = "worker.first_run_at";
+
+async function firstRunAt(db: Db): Promise<Date> {
+  const stored = await getSetting<string | null>(db, FIRST_RUN_KEY, null);
+  if (stored) return new Date(stored);
+  const nowIso = new Date().toISOString();
+  await setSetting(db, FIRST_RUN_KEY, nowIso, "worker");
+  return new Date(nowIso);
+}
+
+// ── discover_profiles ────────────────────────────────────────────────────────
+type DiscoverPayload = {
+  funnel: "customer" | "affiliate";
+  candidates: {
+    igUsername: string;
+    profileUrl: string;
+    displayName?: string;
+    bio?: string;
+    category?: string;
+    location?: string;
+    followerCount?: number;
+    sourceKeyword?: string;
+    discoverySource?: string;
+  }[];
+};
+
+export async function handleDiscoverProfiles(ctx: JobContext, payload: DiscoverPayload) {
+  let created = 0;
+  let duplicate = 0;
+  let blocked = 0;
+  for (const c of payload.candidates) {
+    const res = await discoverLead(ctx.db, {
+      funnel: payload.funnel,
+      igUsername: c.igUsername,
+      profileUrl: c.profileUrl,
+      displayName: c.displayName ?? null,
+      bio: c.bio ?? null,
+      category: c.category ?? null,
+      location: c.location ?? null,
+      followerCount: c.followerCount ?? null,
+      sourceKeyword: c.sourceKeyword ?? null,
+      discoverySource: c.discoverySource ?? "manual_seed",
+      actorType: "unknown",
+    });
+    if (res.status === "created") {
+      created++;
+      await enqueue(ctx.db, {
+        kind: "score_lead",
+        payload: { leadId: res.leadId },
+        dedupeKey: `score:${res.leadId}`,
+      });
+    } else if (res.status === "duplicate") duplicate++;
+    else blocked++;
+  }
+  log.info("discover.done", { created, duplicate, blocked });
+  return { created, duplicate, blocked };
+}
+
+// ── send_first_dm ────────────────────────────────────────────────────────────
+type SendFirstDmPayload = { leadId: number; message: string; variantId?: string };
+
+export async function handleSendFirstDm(ctx: JobContext, payload: SendFirstDmPayload, jobId: number) {
+  const { db } = ctx;
+
+  if (await isSystemPaused(db)) return { skipped: "system_paused" };
+
+  const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);
+  if (lead.channelState !== "browser_contact_pending") {
+    return { skipped: `channel_state=${lead.channelState}` };
+  }
+
+  const breaker = await checkCircuitBreaker(db);
+  if (breaker.tripped) {
+    await tripAndPause(db, "browser", breaker.reason ?? "circuit breaker");
+    return { skipped: "circuit_breaker" };
+  }
+
+  const gate = await browserSendGate(db, { firstRunAt: await firstRunAt(db) });
+  if (!gate.allowed) {
+    // Re-queue for later in the operating window.
+    await enqueue(db, {
+      kind: "send_first_dm",
+      payload,
+      runAt: new Date(Date.now() + 30 * 60_000),
+      dedupeKey: `dm:${payload.leadId}`,
+    });
+    return { skipped: gate.reason };
+  }
+
+  return browserMutex.runExclusive(async () => {
+    const driver = getBrowserDriver();
+    const env = loadEnv();
+    const result = await driver.sendDm({
+      jobId,
+      leadId: lead.id,
+      profileUrl: lead.profileUrl,
+      igUsername: lead.igUsername,
+      message: payload.message,
+      variantId: payload.variantId,
+    });
+
+    await db.insert(browserSendLog).values({
+      leadId: lead.id,
+      jobId,
+      mode: env.BROWSER_SEND_MODE,
+      variantId: payload.variantId,
+      body: payload.message,
+      result: result.status === "sent" ? "sent" : result.status === "blocked" ? "blocked" : "failed",
+      screenshotPath: result.evidence.screenshotPath,
+      accessibilitySnapshotPath: result.evidence.accessibilitySnapshotPath,
+      url: result.evidence.url,
+      consoleErrors: result.evidence.consoleErrors,
+      networkFailures: result.evidence.networkFailures,
+      error: result.status === "failed" ? result.error : result.status === "blocked" ? result.reason : null,
+    });
+
+    if (result.status === "failed") {
+      if (result.error.startsWith("browser_unavailable")) {
+        await tripAndPause(db, "browser", result.error);
+      }
+      throw new Error(result.error);
+    }
+    if (result.status === "blocked") {
+      await raiseAlert(db, "browser", "warning", `envio bloqueado: ${result.reason}`);
+      return { blocked: result.reason };
+    }
+
+    try {
+      await recordOutbound(db, {
+        leadId: lead.id,
+        channel: "browser",
+        body: payload.message,
+        variantId: payload.variantId,
+        externalId: `browser-job-${jobId}`,
+      });
+    } catch (e) {
+      if (!(e instanceof DuplicateSendError)) throw e;
+    }
+    await incrementSendCounter(db, "browser");
+    await moveChannel(db, lead.id, "browser_contact_sent");
+    await moveChannel(db, lead.id, "waiting_inbound_reply");
+    await db
+      .update(leads)
+      .set({ pipelineStage: "contacted", updatedAt: new Date().toISOString() })
+      .where(eq(leads.id, lead.id));
+
+    // Human pace before the next browser job becomes eligible.
+    const wait = randomBetween(env.MIN_SECONDS_BETWEEN_DMS, env.MAX_SECONDS_BETWEEN_DMS);
+    log.info("dm.sent", { leadId: lead.id, nextEligibleInSec: wait });
+    return { sent: true, cooldownSec: wait };
+  });
+}
+
+// ── process_inbound ──────────────────────────────────────────────────────────
+type ProcessInboundPayload = {
+  metaUserId: string;
+  externalId: string;
+  text: string;
+  receivedAt: string;
+};
+
+export async function handleProcessInbound(ctx: JobContext, payload: ProcessInboundPayload) {
+  const { db } = ctx;
+
+  const handoff = await handleInboundReply(db, {
+    metaUserId: payload.metaUserId,
+    externalId: payload.externalId,
+    text: payload.text,
+    receivedAt: payload.receivedAt,
+    resolveLeadId: async (metaUserId) => {
+      // Best-effort: match by ig_user_id already stored on the lead.
+      const [byId] = await db.select().from(leads).where(eq(leads.igUserId, metaUserId)).limit(1);
+      return byId?.id ?? null;
+    },
+  });
+
+  if (!handoff.matched) {
+    await raiseAlert(db, "webhook", "warning", `resposta sem lead correspondente (meta ${payload.metaUserId})`);
+    return { matched: false };
+  }
+  if (handoff.alreadyProcessed) {
+    return { matched: true, alreadyProcessed: true };
+  }
+
+  const leadId = handoff.leadId!;
+  const [lead] = await db.select().from(leads).where(eq(leads.id, leadId)).limit(1);
+  const [conv] = await db.select().from(conversations).where(eq(conversations.leadId, leadId)).limit(1);
+  if (!lead || !conv) return { matched: true, note: "sem contexto" };
+
+  await db
+    .update(leads)
+    .set({ pipelineStage: "replied", updatedAt: new Date().toISOString() })
+    .where(eq(leads.id, leadId));
+
+  const history = await conversationHistory(db, conv.id);
+  const { intent } = await classifyIntent(payload.text, { funnel: lead.funnel, history }, leadId);
+
+  if (intent === "opt_out") {
+    await moveChannel(db, leadId, "do_not_contact");
+    await db
+      .update(leads)
+      .set({ pipelineStage: "closed", updatedAt: new Date().toISOString() })
+      .where(eq(leads.id, leadId));
+    await raiseAlert(db, "engine", "info", `lead ${leadId} pediu opt-out`);
+    return { matched: true, intent };
+  }
+
+  const decision = await decideReply({
+    intent,
+    funnel: lead.funnel,
+    history,
+    profileSummary: `${lead.displayName ?? lead.igUsername} — ${lead.bio ?? ""} (${lead.category ?? "?"})`,
+    leadId,
+  });
+
+  await db.insert(schema.decisionsLog).values({
+    leadId,
+    actor: "ai",
+    decision: decision.action,
+    rationale: decision.rationale,
+    inputs: { intent },
+  });
+
+  if (decision.action === "escalate_human") {
+    await moveChannel(db, leadId, "human_review_required");
+    await db.insert(schema.exceptions).values({ leadId, kind: "needs_human", detail: decision.rationale });
+    return { matched: true, intent, action: decision.action };
+  }
+
+  if (decision.message) {
+    const res = await sendApiMessage(payload.metaUserId, decision.message, {
+      recipientOptedOut: false,
+      channelOwner: conv.ownerChannel,
+      lastInboundAt: conv.lastInboundAt,
+    });
+    if (res.status === "sent") {
+      await recordOutbound(db, {
+        leadId,
+        channel: "api",
+        body: decision.message,
+        externalId: res.externalId,
+      });
+    } else if (res.status === "failed") {
+      await raiseAlert(db, "instagram_api", "warning", `falha ao enviar: ${res.error}`);
+    }
+  }
+
+  return { matched: true, intent, action: decision.action };
+}
+
+async function conversationHistory(db: Db, conversationId: number): Promise<string> {
+  const rows = await db
+    .select()
+    .from(schema.messages)
+    .where(eq(schema.messages.conversationId, conversationId))
+    .orderBy(schema.messages.sentAt);
+  return rows
+    .map((m) => `${m.direction === "outbound" ? "NÓS" : "LEAD"} (${m.channel}): ${m.body}`)
+    .join("\n");
+}

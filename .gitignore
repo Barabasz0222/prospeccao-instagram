@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next
+.next/
+out/
+next-env.d.ts
+
+# build
+dist/
+*.tsbuildinfo
+
+# secrets & local business data (REQUIRED — never commit)
+.env
+.env.local
+.env.*.local
+config/business.json
+
+# chrome dedicated profile
+.chrome-profile/
+
+# database
+*.db
+*.db-shm
+*.db-wal
+data/
+backups/
+
+# browser evidence
+screenshots/
+traces/
+
+# misc
+.DS_Store
+coverage/
+*.log
