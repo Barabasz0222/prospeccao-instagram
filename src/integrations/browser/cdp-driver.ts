@@ -20,6 +20,65 @@ const RESERVED = new Set([
   "emails", "session", "challenge", "oauth", "http", "https",
 ]);
 
+/** "12.3K" / "12,3 mil" / "1.2M" → integer. */
+function expandCount(s: string): number | null {
+  const cleaned = s.trim().replace(/\s+/g, "").replace(/\.(?=\d{3}\b)/g, "");
+  const m = cleaned.match(/^([\d.,]+)\s*(mil|mi|k|m)?$/i);
+  if (!m) return null;
+  let n = parseFloat(m[1]!.replace(",", "."));
+  const suf = (m[2] ?? "").toLowerCase();
+  if (suf === "mil" || suf === "k") n *= 1_000;
+  if (suf === "mi" || suf === "m") n *= 1_000_000;
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
+function jsonStr(html: string, key: string): string | null {
+  const m = html.match(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`));
+  if (!m) return null;
+  try {
+    return JSON.parse(`"${m[1]}"`);
+  } catch {
+    return m[1] ?? null;
+  }
+}
+
+function jsonNum(html: string, path: string): number | null {
+  const m = html.match(new RegExp(`"${path}":\\{"count":(\\d+)`));
+  return m ? Number(m[1]) : null;
+}
+
+function jsonBool(html: string, key: string): boolean {
+  return new RegExp(`"${key}":true`).test(html);
+}
+
+/** Extract public profile signals from the serialized data in the page HTML. */
+function parseProfileHtml(handle: string, html: string): ProfileSignals {
+  const bio = jsonStr(html, "biography");
+  const category = jsonStr(html, "category_name") ?? jsonStr(html, "category");
+  const displayName = jsonStr(html, "full_name");
+  const externalUrl = jsonStr(html, "external_url");
+  const followerCount = jsonNum(html, "edge_followed_by") ?? jsonNum(html, "follower_count");
+  const followingCount = jsonNum(html, "edge_follow") ?? jsonNum(html, "following_count");
+  const postCount = jsonNum(html, "edge_owner_to_timeline_media") ?? jsonNum(html, "media_count");
+  const bioHashtags = Array.from((bio ?? "").matchAll(/#([\p{L}0-9_]+)/gu)).map((m) => m[1]!);
+
+  return {
+    igUsername: handle,
+    profileUrl: `https://www.instagram.com/${handle}/`,
+    displayName: displayName || null,
+    bio: bio || null,
+    category: category || null,
+    location: null,
+    followerCount,
+    followingCount,
+    postCount,
+    externalUrl: externalUrl || null,
+    isPrivate: jsonBool(html, "is_private"),
+    isVerified: jsonBool(html, "is_verified"),
+    bioHashtags,
+  };
+}
+
 const IG_HOST = "instagram.com";
 const EVIDENCE_DIR = "screenshots";
 
@@ -32,6 +91,8 @@ type Mode = "dry_run" | "live";
  * Chrome — the caller must register browser_unavailable and pause the queue.
  */
 export class CdpBrowserDriver implements BrowserDriver {
+  private readonly debugDump = process.env.BROWSER_ENRICH_DUMP !== "0";
+
   constructor(
     private readonly cdpUrl: string,
     private readonly mode: Mode,
@@ -207,81 +268,32 @@ export class CdpBrowserDriver implements BrowserDriver {
       }
       await page.waitForTimeout(randomBetween(600, 1600));
 
-      // NOTE: no inner functions in this callback — esbuild's keepNames helper
-      // (`__name`) is not defined in the page context and would throw.
-      const raw = await page.evaluate(() => {
-        const header = document.querySelector("header");
-        const headerText = header ? header.textContent || "" : "";
+      // Instagram serializes the profile's public data (web_profile_info shape)
+      // into the page HTML. Read it from the rendered document — no API call.
+      const html = await page.content();
+      const signals = parseProfileHtml(handle, html);
 
-        const nums: string[] = [];
-        const countEls = header ? header.querySelectorAll("li, span[title], button span") : [];
-        for (let i = 0; i < countEls.length; i++) {
-          const t = (countEls[i]!.textContent || "").trim();
-          if (/^[\d.,]+\s*(mil|mi|k|m)?\b/i.test(t) || /^\d[\d.,]*$/.test(t)) nums.push(t);
-        }
-        const titleEl = header ? header.querySelector("span[title]") : null;
-        const titleAttr = titleEl ? titleEl.getAttribute("title") : null;
+      // Meta-tag fallback for follower counts when the JSON blob is absent.
+      if (signals.followerCount == null) {
+        const og = html.match(/<meta property="og:description" content="([^"]+)"/i)?.[1] ?? "";
+        const fm = og.match(/([\d.,]+[KMkm]?)\s+Followers/);
+        if (fm) signals.followerCount = expandCount(fm[1]!);
+      }
 
-        let bio: string | null = null;
-        for (const sel of ["header h1 + div", "header section > div:nth-child(3)", "header section div span"]) {
-          const el = document.querySelector(sel);
-          const v = el && el.textContent ? el.textContent.trim() : "";
-          if (v && !bio) bio = v;
-        }
-        const nameEl = document.querySelector("header h1") || document.querySelector("header h2");
-        const displayName = nameEl && nameEl.textContent ? nameEl.textContent.trim() : null;
+      if (this.debugDump) {
+        mkdirSync(EVIDENCE_DIR, { recursive: true });
+        writeFileSync(join(process.cwd(), `${EVIDENCE_DIR}/enrich-${handle}.html`), html);
+        log.info("browser.enrich_debug", {
+          handle,
+          displayName: signals.displayName,
+          bio: (signals.bio ?? "").slice(0, 140),
+          category: signals.category,
+          followerCount: signals.followerCount,
+          isPrivate: signals.isPrivate,
+        });
+      }
 
-        const linkEl = header
-          ? (header.querySelector('a[href^="https://l.instagram.com"], a[rel~="me"]') as HTMLAnchorElement | null)
-          : null;
-        const externalUrl = linkEl ? linkEl.href : null;
-
-        const catEl = document.querySelector('header a[href*="/explore/"]');
-        const category = catEl && catEl.textContent ? catEl.textContent.trim() : null;
-
-        const bodyText = document.body.textContent || "";
-        return {
-          displayName,
-          bio,
-          category,
-          externalUrl,
-          headerText,
-          nums,
-          titleAttr,
-          isPrivate: /this account is private|conta é privada/i.test(bodyText),
-          isVerified: !!(header && header.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Verificado"]')),
-        };
-      });
-
-      const parseCount = (s: string | null): number | null => {
-        if (!s) return null;
-        const m = s.replace(/\./g, "").replace(",", ".").match(/([\d.]+)\s*(mil|mi|k|m)?/i);
-        if (!m) return null;
-        let n = parseFloat(m[1]!);
-        const suf = (m[2] ?? "").toLowerCase();
-        if (suf === "mil" || suf === "k") n *= 1_000;
-        if (suf === "mi" || suf === "m") n *= 1_000_000;
-        return Math.round(n);
-      };
-
-      const followerCount = parseCount(raw.titleAttr) ?? parseCount(raw.nums[1] ?? null);
-      const bioHashtags = Array.from((raw.bio ?? "").matchAll(/#([\p{L}0-9_]+)/gu)).map((m) => m[1]!);
-
-      return {
-        igUsername: handle,
-        profileUrl: `https://www.${IG_HOST}/${handle}/`,
-        displayName: raw.displayName,
-        bio: raw.bio,
-        category: raw.category,
-        location: null,
-        followerCount,
-        followingCount: parseCount(raw.nums[2] ?? null),
-        postCount: parseCount(raw.nums[0] ?? null),
-        externalUrl: raw.externalUrl,
-        isPrivate: raw.isPrivate,
-        isVerified: raw.isVerified,
-        bioHashtags,
-      };
+      return signals;
     } catch (e) {
       log.warn("browser.enrich_failed", { handle, error: e instanceof Error ? e.message : String(e) });
       return null;
