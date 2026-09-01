@@ -35,3 +35,6 @@ traces/
 .DS_Store
 coverage/
 *.log
+
+# operator lead list (may contain client handles)
+/leads.txt

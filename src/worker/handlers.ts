@@ -161,7 +161,10 @@ export async function handleScoreLead(ctx: JobContext, payload: { leadId: number
   });
 
   const threshold = await getSetting<number>(db, QUALIFY_THRESHOLD_KEY, 0.4);
-  if (score.icpScore < threshold) {
+  // Operator-supplied leads bypass the score gate — the operator already
+  // decided they are worth contacting.
+  const manual = (lead.discoverySource ?? "").startsWith("manual");
+  if (!manual && score.icpScore < threshold) {
     await db.insert(schema.decisionsLog).values({
       leadId: lead.id,
       actor: "ai",

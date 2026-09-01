@@ -1,0 +1,7 @@
+# Um perfil do Instagram por linha. Linhas com # são ignoradas.
+# Formato: usuario | nicho/observação curta (a parte após | é opcional)
+#
+# Exemplos (troque pelos reais):
+# construtora.exemplo | construtora em Maringá, obras residenciais
+# engaraujo.projetos | escritório de engenharia, ainda no Excel
+# arqbianca | arquiteta, reformas comerciais
