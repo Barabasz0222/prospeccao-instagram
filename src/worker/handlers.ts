@@ -15,6 +15,7 @@ import { classifyIntent, decideReply, generateOpener } from "@/features/conversa
 import { loadBusiness } from "@/lib/business";
 import { getBrowserDriver } from "@/integrations/browser";
 import { sendApiMessage } from "@/integrations/instagram/api";
+import { getAccessToken, refreshAccessToken, tokenDaysLeft } from "@/integrations/instagram/token";
 import { getSetting, isSystemPaused, setSetting } from "@/features/settings/repo";
 import { loadEnv } from "@/lib/env";
 import { log } from "@/lib/logger";
@@ -137,6 +138,21 @@ export async function handleEnrichProfile(ctx: JobContext, payload: { leadId: nu
 
   await enqueue(db, { kind: "score_lead", payload: { leadId: lead.id }, dedupeKey: `score:${lead.id}` });
   return { enriched: true, followers: signals.followerCount };
+}
+
+// ── refresh_ig_token ─────────────────────────────────────────────────────────
+export async function handleRefreshIgToken(ctx: JobContext) {
+  const { db } = ctx;
+  const days = await tokenDaysLeft(db);
+  if (days != null && days > 10) return { skipped: `token ok (${Math.round(days)}d)` };
+
+  const r = await refreshAccessToken(db);
+  if (!r.ok) {
+    await raiseAlert(db, "instagram_api", "critical", `renovação do token falhou: ${r.reason}`);
+    return { ok: false, reason: r.reason };
+  }
+  await raiseAlert(db, "instagram_api", "info", "token do Instagram renovado (+60 dias)");
+  return { ok: true };
 }
 
 // ── discover_from_keywords ───────────────────────────────────────────────────
@@ -530,6 +546,7 @@ export async function handleProcessInbound(ctx: JobContext, payload: ProcessInbo
       recipientOptedOut: false,
       channelOwner: conv.ownerChannel,
       lastInboundAt: conv.lastInboundAt,
+      accessToken: await getAccessToken(db),
     });
     if (res.status === "sent") {
       await recordOutbound(db, {

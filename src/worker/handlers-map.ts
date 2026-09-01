@@ -3,6 +3,7 @@ import {
   handleDiscoverProfiles,
   handleEnrichProfile,
   handleProcessInbound,
+  handleRefreshIgToken,
   handleScoreLead,
   handleSendFirstDm,
   handleSendFollowup,
@@ -24,5 +25,6 @@ export const HANDLERS: Record<string, JobHandler> = {
   send_first_dm: (c, p, id) => handleSendFirstDm(c, p as never, id),
   send_followup: (c, p, id) => handleSendFollowup(c, p as never, id),
   process_inbound: (c, p) => handleProcessInbound(c, p as never),
+  refresh_ig_token: (c) => handleRefreshIgToken(c),
   backup_db: async () => ({ dest: backupDatabase() }),
 };

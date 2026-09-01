@@ -7,7 +7,7 @@ import { log } from "@/lib/logger";
 import { backupDatabase } from "@/db/backup-runner";
 import type { JobContext } from "./handlers";
 import { runOneJob } from "./runner";
-import { recoverStaleJobs } from "./queue";
+import { enqueue, recoverStaleJobs } from "./queue";
 import { enqueueDiscoveryRun } from "./discovery-planner";
 
 const WORKER_ID = `worker-${randomUUID().slice(0, 8)}`;
@@ -43,6 +43,19 @@ async function maybeDiscover(ctx: JobContext) {
   }
 }
 
+let lastTokenCheck = 0;
+/** Enqueue a token-refresh check once a day. */
+async function maybeRefreshToken(ctx: JobContext) {
+  if (Date.now() - lastTokenCheck <= 24 * 3_600_000) return;
+  lastTokenCheck = Date.now();
+  await enqueue(ctx.db, {
+    kind: "refresh_ig_token",
+    payload: {},
+    dedupeKey: `token:${new Date().toISOString().slice(0, 10)}`,
+    priority: -8,
+  });
+}
+
 async function main() {
   const ctx: JobContext = { db: getDb(), workerId: WORKER_ID };
   log.info("worker.start", { workerId: WORKER_ID });
@@ -59,6 +72,7 @@ async function main() {
         continue;
       }
       await maybeDiscover(ctx);
+      await maybeRefreshToken(ctx);
       const outcome = await runOneJob(ctx);
       if (outcome === "idle") await sleep(POLL_INTERVAL_MS);
     } catch (e) {

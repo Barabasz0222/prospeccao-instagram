@@ -62,9 +62,19 @@ do seu app na Meta. O webhook deve apontar para:
 https://SEU_DOMINIO/api/webhooks/instagram
 ```
 
-Enquanto não houver app aprovado, o restante do sistema continua funcionando —
+Passos completos: **API do Instagram com login do Instagram** → pegue
+`app secret`, gere o **token de longa duração (60 dias)** e o **ID da conta**;
+webhook com o campo `messages`; permissões `instagram_business_basic` e
+`instagram_business_manage_messages`.
+
+O token de 60 dias é **renovado automaticamente** pelo worker (job
+`refresh_ig_token`, 1×/dia; guardado na tabela `settings`, `.env` vira só o
+bootstrap inicial). Se a renovação falhar, aparece um alerta crítico em
+Exceções.
+
+Enquanto não houver app configurado, o restante do sistema continua funcionando —
 só o handoff para a API oficial fica parado e as respostas vão para a fila de
-exceções.
+exceções (você responde na mão pelo Instagram).
 
 ### 3.3 Chrome com perfil dedicado (primeiro contato pelo navegador)
 

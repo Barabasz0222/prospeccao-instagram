@@ -1,5 +1,4 @@
 import "@/lib/server-only-shim";
-import { loadEnv } from "@/lib/env";
 import { log } from "@/lib/logger";
 
 const GRAPH = "https://graph.instagram.com/v21.0";
@@ -21,6 +20,8 @@ export type SendPreconditions = {
   recipientOptedOut: boolean;
   channelOwner: "browser" | "api" | "none";
   lastInboundAt: string | null;
+  /** Live access token (from the settings-backed store). */
+  accessToken?: string | null;
 };
 
 /**
@@ -37,19 +38,19 @@ export async function sendApiMessage(
   if (pre.channelOwner !== "api") return { status: "skipped", reason: "channel_not_api" };
   if (!isWithinMessagingWindow(pre.lastInboundAt)) return { status: "skipped", reason: "api_window_closed" };
 
+  const token = pre.accessToken ?? process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+
   // Offline / simulation: no real Graph API call.
-  const token = process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
-  if (!token || token === "test" || process.env.CLAUDEIA_API_KEY === "offline") {
+  if (!token || token === "test" || token === "dev" || process.env.CLAUDEIA_API_KEY === "offline") {
     return { status: "sent", externalId: `sim-${Date.now()}` };
   }
 
-  const { INSTAGRAM_PAGE_ACCESS_TOKEN } = loadEnv();
   try {
     const res = await fetch(`${GRAPH}/me/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${INSTAGRAM_PAGE_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
     });
