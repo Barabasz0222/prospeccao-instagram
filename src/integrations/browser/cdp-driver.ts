@@ -8,10 +8,17 @@ import type {
   BrowserDriver,
   DiscoveredProfile,
   DiscoverQuery,
+  ProfileSignals,
   SendDmEvidence,
   SendDmInput,
   SendDmResult,
 } from "./types";
+
+const RESERVED = new Set([
+  "explore", "reels", "reel", "p", "accounts", "direct", "stories", "about",
+  "legal", "privacy", "terms", "developer", "api", "web", "graphql", "ajax",
+  "emails", "session", "challenge", "oauth", "http", "https",
+]);
 
 const IG_HOST = "instagram.com";
 const EVIDENCE_DIR = "screenshots";
@@ -59,9 +66,10 @@ export class CdpBrowserDriver implements BrowserDriver {
   }
 
   /**
-   * Best-effort public discovery. Instagram's DOM changes often, so selectors
-   * here are a starting point the operator tunes against the live site during
-   * the dry-run phase. Read-only: navigates, reads handles, never interacts.
+   * Public discovery from the logged-in session. Read-only: navigates and
+   * reads the rendered DOM, never interacts, never touches a private endpoint.
+   * Instagram's markup shifts, so the operator tunes the selectors against the
+   * live site in the dry-run phase (evidence lands in screenshots/).
    */
   async discoverProfiles(query: DiscoverQuery): Promise<DiscoveredProfile[]> {
     let browser: Browser | null = null;
@@ -72,36 +80,219 @@ export class CdpBrowserDriver implements BrowserDriver {
       if (!context) throw new Error("nenhum contexto logado no Chrome");
       page = await context.newPage();
 
-      const url =
-        query.kind === "hashtag"
-          ? `https://www.${IG_HOST}/explore/tags/${encodeURIComponent(query.term.replace(/^#/, ""))}/`
-          : `https://www.${IG_HOST}/explore/search/keyword/?q=${encodeURIComponent(query.term)}`;
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      if (page.url().includes("/accounts/login")) return [];
+      let handles: string[] = [];
+      if (query.kind === "hashtag") {
+        handles = await this.fromHashtag(page, query.term.replace(/^#/, ""), query.limit);
+      } else if (query.kind === "keyword") {
+        handles = await this.fromSearch(page, query.term, query.limit);
+      } else {
+        handles = await this.fromRelated(page, query.term.replace(/^@/, ""), query.limit);
+      }
 
-      const handles = await page.evaluate((max: number) => {
-        const seen = new Set<string>();
-        const out: string[] = [];
-        for (const a of Array.from(document.querySelectorAll('a[href^="/"]'))) {
-          const href = (a as HTMLAnchorElement).getAttribute("href") ?? "";
-          const m = href.match(/^\/([A-Za-z0-9._]+)\/?$/);
-          if (m && m[1] && !["explore", "reels", "p", "accounts"].includes(m[1]) && !seen.has(m[1])) {
-            seen.add(m[1]);
-            out.push(m[1]);
-            if (out.length >= max) break;
-          }
-        }
-        return out;
-      }, query.limit);
+      const clean = handles
+        .map((h) => h.toLowerCase().replace(/[^a-z0-9._]/g, ""))
+        .filter((h) => h.length > 1 && h.length <= 30 && !RESERVED.has(h));
+      const unique = Array.from(new Set(clean)).slice(0, query.limit);
 
-      return handles.map((h) => ({ igUsername: h, profileUrl: `https://www.${IG_HOST}/${h}/` }));
+      return unique.map((h) => ({ igUsername: h, profileUrl: `https://www.${IG_HOST}/${h}/` }));
     } catch (e) {
-      log.warn("browser.discover_failed", { error: e instanceof Error ? e.message : String(e) });
+      log.warn("browser.discover_failed", { term: query.term, error: e instanceof Error ? e.message : String(e) });
+      await this.captureDiscover(page, query).catch(() => {});
       return [];
     } finally {
       await page?.close().catch(() => {});
       await browser?.close().catch(() => {});
     }
+  }
+
+  /** Hashtag page -> recent post permalinks -> post author handles. */
+  private async fromHashtag(page: Page, tag: string, limit: number): Promise<string[]> {
+    await page.goto(`https://www.${IG_HOST}/explore/tags/${encodeURIComponent(tag)}/`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    if (page.url().includes("/accounts/login")) return [];
+    await this.scroll(page, 4);
+
+    const postLinks: string[] = await page.evaluate((max: number) => {
+      const out = new Set<string>();
+      for (const a of Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'))) {
+        const href = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+        const m = href.match(/\/(p|reel)\/[^/]+\//);
+        if (m) out.add(m[0]);
+        if (out.size >= max * 3) break;
+      }
+      return Array.from(out);
+    }, limit);
+
+    const authors: string[] = [];
+    for (const link of postLinks.slice(0, limit * 3)) {
+      if (authors.length >= limit) break;
+      try {
+        await page.goto(`https://www.${IG_HOST}${link}`, { waitUntil: "domcontentloaded", timeout: 20_000 });
+        await page.waitForTimeout(randomBetween(400, 1200));
+        const author = await page.evaluate(() => {
+          const a = document.querySelector('article a[href^="/"]:not([href*="/p/"]):not([href*="/reel/"])');
+          const href = a?.getAttribute("href") ?? "";
+          const m = href.match(/^\/([A-Za-z0-9._]+)\/?$/);
+          return m?.[1] ?? null;
+        });
+        if (author) authors.push(author);
+      } catch {
+        /* skip a post that won't load */
+      }
+    }
+    return authors;
+  }
+
+  /** Search box -> account results. */
+  private async fromSearch(page: Page, term: string, limit: number): Promise<string[]> {
+    await page.goto(`https://www.${IG_HOST}/`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (page.url().includes("/accounts/login")) return [];
+    const searchBtn = page.getByRole("link", { name: /search|pesquisa|busca/i }).first();
+    await searchBtn.click({ timeout: 10_000 }).catch(() => {});
+    const box = page.getByRole("textbox").first();
+    await box.waitFor({ state: "visible", timeout: 10_000 });
+    await box.pressSequentially(term, { delay: randomBetween(40, 110) });
+    await page.waitForTimeout(randomBetween(1500, 3000));
+
+    return page.evaluate((max: number) => {
+      const out: string[] = [];
+      for (const a of Array.from(document.querySelectorAll('a[href^="/"][role="link"], a[href^="/"]'))) {
+        const href = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+        const m = href.match(/^\/([A-Za-z0-9._]+)\/$/);
+        if (m && m[1]) out.push(m[1]);
+        if (out.length >= max * 2) break;
+      }
+      return out;
+    }, limit);
+  }
+
+  /** Seed profile -> "similar accounts" chips. */
+  private async fromRelated(page: Page, seed: string, limit: number): Promise<string[]> {
+    await page.goto(`https://www.${IG_HOST}/${encodeURIComponent(seed)}/`, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    if (page.url().includes("/accounts/login")) return [];
+    await page.waitForTimeout(randomBetween(1000, 2500));
+    return page.evaluate((max: number) => {
+      const out: string[] = [];
+      for (const a of Array.from(document.querySelectorAll('a[href^="/"]'))) {
+        const href = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+        const m = href.match(/^\/([A-Za-z0-9._]+)\/$/);
+        if (m && m[1]) out.push(m[1]);
+        if (out.length >= max * 3) break;
+      }
+      return out;
+    }, limit);
+  }
+
+  async enrichProfile(igUsername: string): Promise<ProfileSignals | null> {
+    let browser: Browser | null = null;
+    let page: Page | null = null;
+    const handle = igUsername.toLowerCase().replace(/^@/, "");
+    try {
+      browser = await this.connect();
+      const context = browser.contexts()[0];
+      if (!context) throw new Error("nenhum contexto logado no Chrome");
+      page = await context.newPage();
+      await page.goto(`https://www.${IG_HOST}/${encodeURIComponent(handle)}/`, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
+      if (page.url().includes("/accounts/login")) return null;
+      if (page.url().includes("/accounts/") || (await page.title()).toLowerCase().includes("page not found")) {
+        return null;
+      }
+      await page.waitForTimeout(randomBetween(600, 1600));
+
+      const raw = await page.evaluate(() => {
+        const text = (sel: string) => document.querySelector(sel)?.textContent?.trim() ?? null;
+        const header = document.querySelector("header");
+        const headerText = header?.textContent ?? "";
+
+        // Follower/following/posts from the counts row (order is posts, followers, following).
+        const nums: string[] = [];
+        for (const el of Array.from(header?.querySelectorAll("li, span[title], button span") ?? [])) {
+          const t = el.textContent?.trim() ?? "";
+          if (/^[\d.,]+\s*(mil|mi|k|m)?\b/i.test(t) || /^\d[\d.,]*$/.test(t)) nums.push(t);
+        }
+        const titleAttr = header?.querySelector("span[title]")?.getAttribute("title") ?? null;
+
+        const bio =
+          text("header h1 + div") ??
+          text('header section > div:nth-child(3)') ??
+          text("header section div span");
+        const displayName = text("header h1") ?? text("header h2") ?? null;
+        const externalUrl =
+          (header?.querySelector('a[href^="https://l.instagram.com"], a[rel~="me"]') as HTMLAnchorElement | null)?.href ??
+          null;
+        const category = text('header a[href*="/explore/"]') ?? null;
+
+        return {
+          displayName,
+          bio,
+          category,
+          externalUrl,
+          headerText,
+          nums,
+          titleAttr,
+          isPrivate: /this account is private|conta é privada/i.test(document.body.textContent ?? ""),
+          isVerified: !!header?.querySelector('svg[aria-label*="Verified"], svg[aria-label*="Verificado"]'),
+        };
+      });
+
+      const parseCount = (s: string | null): number | null => {
+        if (!s) return null;
+        const m = s.replace(/\./g, "").replace(",", ".").match(/([\d.]+)\s*(mil|mi|k|m)?/i);
+        if (!m) return null;
+        let n = parseFloat(m[1]!);
+        const suf = (m[2] ?? "").toLowerCase();
+        if (suf === "mil" || suf === "k") n *= 1_000;
+        if (suf === "mi" || suf === "m") n *= 1_000_000;
+        return Math.round(n);
+      };
+
+      const followerCount = parseCount(raw.titleAttr) ?? parseCount(raw.nums[1] ?? null);
+      const bioHashtags = Array.from((raw.bio ?? "").matchAll(/#([\p{L}0-9_]+)/gu)).map((m) => m[1]!);
+
+      return {
+        igUsername: handle,
+        profileUrl: `https://www.${IG_HOST}/${handle}/`,
+        displayName: raw.displayName,
+        bio: raw.bio,
+        category: raw.category,
+        location: null,
+        followerCount,
+        followingCount: parseCount(raw.nums[2] ?? null),
+        postCount: parseCount(raw.nums[0] ?? null),
+        externalUrl: raw.externalUrl,
+        isPrivate: raw.isPrivate,
+        isVerified: raw.isVerified,
+        bioHashtags,
+      };
+    } catch (e) {
+      log.warn("browser.enrich_failed", { handle, error: e instanceof Error ? e.message : String(e) });
+      return null;
+    } finally {
+      await page?.close().catch(() => {});
+      await browser?.close().catch(() => {});
+    }
+  }
+
+  private async scroll(page: Page, times: number): Promise<void> {
+    for (let i = 0; i < times; i++) {
+      await page.mouse.wheel(0, 2400).catch(() => {});
+      await page.waitForTimeout(randomBetween(700, 1600));
+    }
+  }
+
+  private async captureDiscover(page: Page | null, query: DiscoverQuery): Promise<void> {
+    if (!page) return;
+    mkdirSync(EVIDENCE_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await page.screenshot({ path: `${EVIDENCE_DIR}/discover-${query.kind}-${query.term.slice(0, 20)}-${stamp}.png` });
   }
 
   async sendDm(input: SendDmInput): Promise<SendDmResult> {

@@ -1,6 +1,7 @@
 import {
   handleDiscoverFromKeywords,
   handleDiscoverProfiles,
+  handleEnrichProfile,
   handleProcessInbound,
   handleScoreLead,
   handleSendFirstDm,
@@ -18,6 +19,7 @@ export type JobHandler = (
 export const HANDLERS: Record<string, JobHandler> = {
   discover_from_keywords: (c, p) => handleDiscoverFromKeywords(c, p as never),
   discover_profiles: (c, p) => handleDiscoverProfiles(c, p as never),
+  enrich_profile: (c, p) => handleEnrichProfile(c, p as never),
   score_lead: (c, p) => handleScoreLead(c, p as never),
   send_first_dm: (c, p, id) => handleSendFirstDm(c, p as never, id),
   send_followup: (c, p, id) => handleSendFollowup(c, p as never, id),

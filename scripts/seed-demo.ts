@@ -1,14 +1,13 @@
 /**
- * Popula o banco configurado (DATABASE_URL) com um experimento A/B e enfileira
- * jobs de descoberta para os dois funis. O worker (`pnpm dev`) faz o resto:
- * descobre → pontua → qualifica → gera abertura → 1ª DM (em simulação).
+ * Cria o experimento A/B da mensagem de abertura. A descoberta de leads é
+ * automática (o worker roda a cada X horas a partir do config/business.json) —
+ * não precisa enfileirar nada aqui.
  *
- *   pnpm tsx scripts/seed-demo.ts
+ *   pnpm seed
  */
 import "./_env";
 import { getDb } from "@/db/client";
 import { experiments } from "@/db/schema";
-import { enqueue } from "@/worker/queue";
 
 const db = getDb();
 
@@ -26,27 +25,5 @@ await db
   })
   .onConflictDoNothing();
 
-await enqueue(db, {
-  kind: "discover_from_keywords",
-  payload: {
-    funnel: "customer",
-    queries: [
-      { kind: "keyword", term: "sistema para construtora", limit: 6 },
-      { kind: "keyword", term: "gestão de obras", limit: 6 },
-    ],
-  },
-  dedupeKey: "seed:discover:customer",
-});
-
-await enqueue(db, {
-  kind: "discover_from_keywords",
-  payload: {
-    funnel: "affiliate",
-    queries: [{ kind: "keyword", term: "automação de processos com inteligência artificial", limit: 5 }],
-  },
-  dedupeKey: "seed:discover:affiliate",
-});
-
-console.log("Seed concluído. Rode `pnpm dev` e abra http://localhost:3000");
-console.log("O worker vai processar a fila: descoberta → score → qualificação → 1ª DM (simulação).");
+console.log("Experimento A/B criado. Rode `pnpm dev` — a descoberta começa sozinha.");
 process.exit(0);

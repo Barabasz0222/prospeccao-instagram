@@ -1,12 +1,14 @@
 import "@/lib/dotenv";
 import { randomUUID } from "node:crypto";
 import { getDb } from "@/db/client";
-import { isSystemPaused } from "@/features/settings/repo";
+import { getSetting, isSystemPaused } from "@/features/settings/repo";
+import { loadBusiness } from "@/lib/business";
 import { log } from "@/lib/logger";
 import { backupDatabase } from "@/db/backup-runner";
 import type { JobContext } from "./handlers";
 import { runOneJob } from "./runner";
 import { recoverStaleJobs } from "./queue";
+import { enqueueDiscoveryRun } from "./discovery-planner";
 
 const WORKER_ID = `worker-${randomUUID().slice(0, 8)}`;
 const POLL_INTERVAL_MS = 2_000;
@@ -14,8 +16,32 @@ const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let running = true;
 let lastBackup = 0;
+let lastDiscovery = 0;
 process.on("SIGINT", () => (running = false));
 process.on("SIGTERM", () => (running = false));
+
+async function maybeBackup() {
+  if (Date.now() - lastBackup <= BACKUP_INTERVAL_MS) return;
+  lastBackup = Date.now();
+  try {
+    backupDatabase();
+  } catch (e) {
+    log.error("backup.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Autonomous discovery: enqueue a fresh hunt every N hours (default 8). */
+async function maybeDiscover(ctx: JobContext) {
+  const everyHours = await getSetting<number>(ctx.db, "discovery.interval_hours", 8);
+  if (Date.now() - lastDiscovery <= everyHours * 3_600_000) return;
+  lastDiscovery = Date.now();
+  try {
+    const n = await enqueueDiscoveryRun(ctx.db, loadBusiness());
+    if (n > 0) log.info("discovery.scheduled", { runs: n });
+  } catch (e) {
+    log.error("discovery.schedule_failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+}
 
 async function main() {
   const ctx: JobContext = { db: getDb(), workerId: WORKER_ID };
@@ -26,19 +52,13 @@ async function main() {
 
   while (running) {
     try {
-      if (Date.now() - lastBackup > BACKUP_INTERVAL_MS) {
-        lastBackup = Date.now();
-        try {
-          backupDatabase();
-        } catch (e) {
-          log.error("backup.failed", { error: e instanceof Error ? e.message : String(e) });
-        }
-      }
+      await maybeBackup();
 
       if (await isSystemPaused(ctx.db)) {
         await sleep(5_000);
         continue;
       }
+      await maybeDiscover(ctx);
       const outcome = await runOneJob(ctx);
       if (outcome === "idle") await sleep(POLL_INTERVAL_MS);
     } catch (e) {

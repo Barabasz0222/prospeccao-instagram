@@ -93,7 +93,8 @@ describe("end-to-end flow (simulation)", () => {
 
     const all = await db.select().from(leads);
     expect(all.length).toBe(5);
-    expect(all.every((l) => l.icpScore !== null)).toBe(true);
+    // enrich_profile ran and filled signals before scoring
+    expect(all.every((l) => l.icpScore !== null && l.bio !== null)).toBe(true);
 
     const qualified = all.filter((l) => l.pipelineStage === "contacted" || l.channelState === "waiting_inbound_reply");
     expect(qualified.length).toBeGreaterThan(0);

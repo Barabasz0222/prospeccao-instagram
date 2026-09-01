@@ -202,6 +202,25 @@ pnpm worker                 # worker, em outro terminal
 4. Piloto limitado (aquecimento: 5/dia na 1ª semana, +5 por semana).
 5. Autonomia total dentro dos limites.
 
+## 8b. Descoberta autônoma
+
+Com `pnpm dev` rodando, o worker **descobre leads sozinho** a cada 8h
+(ajustável em Configurações → "Descoberta: intervalo"):
+
+1. Lê `config/business.json` → `icp.keywords` + `icp.segments` (funil clientes) e
+   `affiliateTopics` (funil afiliados)
+2. Cada termo vira uma hashtag (`gestão de obras` → `#gestaodeobras`) + uma busca
+3. Abre a página da hashtag, rola, pega os posts recentes → abre cada post → pega o autor
+4. Visita cada perfil, lê bio/categoria/seguidores/link do HTML (`enrich_profile`)
+5. Pontua contra o ICP, qualifica os que passam, gera a abertura, manda a 1ª DM
+
+Você não precisa fazer nada — só manter `config/business.json` com termos bons.
+Para adicionar hashtags específicas: Configurações, ou via `discovery.extra_hashtags`
+nas settings.
+
+`pnpm add-leads` continua disponível se quiser injetar perfis específicos na mão
+(esses pulam o filtro de score).
+
 ## 9. Ajustar o scraping real do Instagram
 
 Os seletores em `src/integrations/browser/cdp-driver.ts` (`discoverProfiles` e

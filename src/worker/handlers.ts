@@ -74,16 +74,69 @@ export async function handleDiscoverProfiles(ctx: JobContext, payload: DiscoverP
     });
     if (res.status === "created") {
       created++;
+      const needsEnrich = (c.discoverySource ?? "").startsWith("browser") && !c.bio;
       await enqueue(ctx.db, {
-        kind: "score_lead",
+        kind: needsEnrich ? "enrich_profile" : "score_lead",
         payload: { leadId: res.leadId },
-        dedupeKey: `score:${res.leadId}`,
+        dedupeKey: `${needsEnrich ? "enrich" : "score"}:${res.leadId}`,
       });
     } else if (res.status === "duplicate") duplicate++;
     else blocked++;
   }
   log.info("discover.done", { created, duplicate, blocked });
   return { created, duplicate, blocked };
+}
+
+// ── enrich_profile ───────────────────────────────────────────────────────────
+export async function handleEnrichProfile(ctx: JobContext, payload: { leadId: number }) {
+  const { db } = ctx;
+  if (await isSystemPaused(db)) return { skipped: "system_paused" };
+
+  const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
+  if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);
+  if (lead.pipelineStage !== "discovered") return { skipped: `stage=${lead.pipelineStage}` };
+
+  const signals = await browserMutex.runExclusive(() =>
+    getBrowserDriver().enrichProfile(lead.igUsername),
+  );
+
+  if (!signals || signals.isPrivate) {
+    // Gone / unreadable / private — drop it, don't DM blind.
+    await db
+      .update(leads)
+      .set({ pipelineStage: "closed", updatedAt: new Date().toISOString() })
+      .where(eq(leads.id, lead.id));
+    await db.insert(schema.events).values({
+      leadId: lead.id,
+      type: signals?.isPrivate ? "skipped_private" : "enrich_failed",
+      data: {},
+    });
+    return { enriched: false, reason: signals?.isPrivate ? "private" : "unreadable" };
+  }
+
+  await db
+    .update(leads)
+    .set({
+      displayName: signals.displayName,
+      bio: signals.bio,
+      category: signals.category,
+      location: signals.location,
+      followerCount: signals.followerCount,
+      publicSignals: {
+        ...(lead.publicSignals ?? {}),
+        followingCount: signals.followingCount,
+        postCount: signals.postCount,
+        externalUrl: signals.externalUrl,
+        isPrivate: signals.isPrivate,
+        isVerified: signals.isVerified,
+        bioHashtags: signals.bioHashtags,
+      },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(leads.id, lead.id));
+
+  await enqueue(db, { kind: "score_lead", payload: { leadId: lead.id }, dedupeKey: `score:${lead.id}` });
+  return { enriched: true, followers: signals.followerCount };
 }
 
 // ── discover_from_keywords ───────────────────────────────────────────────────
