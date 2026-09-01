@@ -32,80 +32,68 @@ function expandCount(s: string): number | null {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
-function jsonStr(hay: string, key: string): string | null {
-  const m = hay.match(new RegExp(`"${key}":"((?:[^"\\\\]|\\\\.)*)"`));
-  if (!m) return null;
-  try {
-    return JSON.parse(`"${m[1]}"`);
-  } catch {
-    return m[1] ?? null;
-  }
-}
-
-function jsonNum(hay: string, path: string): number | null {
-  const m =
-    hay.match(new RegExp(`"${path}":\\{"count":(\\d+)`)) ?? hay.match(new RegExp(`"${path}":(\\d+)`));
-  return m ? Number(m[1]) : null;
-}
+const BUTTON_LINES = /^(seguir|following|seguindo|mensagem|message|contato|contact|inscrever|subscribe|mais|more|\.\.\.|editar perfil|edit profile)$/i;
+const COUNT_LINE = /(seguidor|seguindo|publica|post|follower|following)/i;
 
 /**
- * Extract public profile signals. The HTML also carries the *logged-in
- * viewer's* data, so bio/category/counts are read from a window anchored on
- * this profile's own `"username":"<handle>"`, and name/counts are cross-checked
- * against the og: meta tags (always about the viewed profile).
+ * og: meta tags are the reliable source for the VIEWED profile's name and
+ * counts (the embedded JSON is the logged-in viewer's). Bio + category come
+ * from the rendered header text.
  */
-function parseProfileHtml(handle: string, html: string): ProfileSignals {
-  const h = handle.toLowerCase();
+function parseProfile(handle: string, html: string, headerText: string): ProfileSignals {
+  const ogTitle = html.match(/<meta property="og:title" content="([^"]*)"/i)?.[1] ?? "";
+  const ogDesc = html.match(/<meta property="og:description" content="([^"]*)"/i)?.[1] ?? "";
 
-  // Window around the target profile's own record.
-  let scope = html;
-  const at = html.toLowerCase().indexOf(`"username":"${h}"`);
-  if (at >= 0) scope = html.slice(Math.max(0, at - 40_000), at + 40_000);
+  const displayName = ogTitle.match(/^(.*?)\s*\(@/)?.[1]?.trim() || null;
 
-  const ogTitle = html.match(/<meta property="og:title" content="([^"]+)"/i)?.[1] ?? "";
-  const ogDesc = html.match(/<meta property="og:description" content="([^"]+)"/i)?.[1] ?? "";
+  const grab = (re: RegExp) => {
+    const m = ogDesc.match(re);
+    return m ? expandCount(m[1]!) : null;
+  };
+  const followerCount =
+    grab(/([\d.,]+\s*(?:mil|mi|k|m)?)\s*seguidor/i) ?? grab(/([\d.,]+\s*[KMB]?)\s*Followers/i);
+  const followingCount =
+    grab(/seguindo\s*([\d.,]+\s*(?:mil|mi|k|m)?)/i) ?? grab(/([\d.,]+\s*[KMB]?)\s*Following/i);
+  const postCount =
+    grab(/([\d.,]+\s*(?:mil|mi|k|m)?)\s*(?:publica|posts?)/i) ?? grab(/([\d.,]+\s*[KMB]?)\s*Posts/i);
 
-  let displayName = jsonStr(scope, "full_name");
-  if (!displayName) {
-    const t = ogTitle.match(/^(.*?)\s*\(@/);
-    displayName = t ? t[1]!.trim() : null;
+  // Header text lines minus the handle, buttons, counts and the display name.
+  const junk = new Set<string>([handle.toLowerCase(), (displayName ?? "").toLowerCase()]);
+  const lines = headerText
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l &&
+        !junk.has(l.toLowerCase()) &&
+        !BUTTON_LINES.test(l) &&
+        !COUNT_LINE.test(l) &&
+        !/^\d[\d.,]*\s*(mil|mi|k|m)?$/i.test(l),
+    );
+  // First short line is usually the business category; the rest is the bio.
+  let category: string | null = null;
+  let bioLines = lines;
+  if (lines.length > 1 && lines[0]!.length <= 40 && !lines[0]!.includes("http")) {
+    category = lines[0]!;
+    bioLines = lines.slice(1);
   }
-
-  const bio = jsonStr(scope, "biography");
-  const category = jsonStr(scope, "category_name") ?? jsonStr(scope, "category");
-  const externalUrl = jsonStr(scope, "external_url");
-
-  let followerCount = jsonNum(scope, "edge_followed_by") ?? jsonNum(scope, "follower_count");
-  if (followerCount == null) {
-    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Followers/);
-    if (fm) followerCount = expandCount(fm[1]!);
-  }
-  let followingCount = jsonNum(scope, "edge_follow") ?? jsonNum(scope, "following_count");
-  if (followingCount == null) {
-    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Following/);
-    if (fm) followingCount = expandCount(fm[1]!);
-  }
-  let postCount = jsonNum(scope, "edge_owner_to_timeline_media") ?? jsonNum(scope, "media_count");
-  if (postCount == null) {
-    const fm = ogDesc.match(/([\d.,]+\s*[KMBkmb]?)\s*Posts/);
-    if (fm) postCount = expandCount(fm[1]!);
-  }
-
+  const bio = bioLines.filter((l) => !/^https?:\/\/|^www\./i.test(l)).join("\n").trim() || null;
+  const externalUrl = bioLines.find((l) => /^https?:\/\/|^www\./i.test(l)) ?? null;
   const bioHashtags = Array.from((bio ?? "").matchAll(/#([\p{L}0-9_]+)/gu)).map((m) => m[1]!);
 
   return {
     igUsername: handle,
     profileUrl: `https://www.instagram.com/${handle}/`,
-    displayName: displayName || null,
-    bio: bio || null,
-    category: category || null,
+    displayName,
+    bio,
+    category,
     location: null,
     followerCount,
     followingCount,
     postCount,
-    externalUrl: externalUrl || null,
-    isPrivate: new RegExp(`"is_private":true`).test(scope),
-    isVerified: new RegExp(`"is_verified":true`).test(scope),
+    externalUrl,
+    isPrivate: /esta conta é privada|this account is private/i.test(headerText),
+    isVerified: /verificad|verified/i.test(ogTitle),
     bioHashtags,
   };
 }
@@ -297,16 +285,24 @@ export class CdpBrowserDriver implements BrowserDriver {
       if (page.url().includes("/accounts/") || (await page.title()).toLowerCase().includes("page not found")) {
         return null;
       }
-      await page.waitForTimeout(randomBetween(600, 1600));
-
-      // Instagram serializes the profile's public data (web_profile_info shape)
-      // into the page HTML. Read it from the rendered document — no API call.
+      // og: meta tags are the only server-rendered data ABOUT THE VIEWED
+      // profile (the embedded JSON is the logged-in viewer's). Bio/category
+      // only exist after the client renders the header.
       const html = await page.content();
-      const signals = parseProfileHtml(handle, html);
+      await page.waitForTimeout(randomBetween(2200, 3800));
+      const headerText = await page
+        .evaluate(() => {
+          const el = document.querySelector("header") || document.querySelector("main");
+          return el ? (el as HTMLElement).innerText || "" : "";
+        })
+        .catch(() => "");
+
+      const signals = parseProfile(handle, html, headerText);
 
       if (this.debugDump) {
         mkdirSync(EVIDENCE_DIR, { recursive: true });
         writeFileSync(join(process.cwd(), `${EVIDENCE_DIR}/enrich-${handle}.html`), html);
+        writeFileSync(join(process.cwd(), `${EVIDENCE_DIR}/enrich-${handle}.header.txt`), headerText);
         log.info("browser.enrich_debug", {
           handle,
           displayName: signals.displayName,
