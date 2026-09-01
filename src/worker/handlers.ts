@@ -161,19 +161,47 @@ type DiscoverFromKeywordsPayload = {
   queries: { kind: "keyword" | "hashtag"; term: string; limit?: number }[];
 };
 
+/**
+ * Fan-out only: one short job per query so a long crawl never blocks DMs or
+ * inbound replies. Each `discover_one` holds the browser for a single term.
+ */
 export async function handleDiscoverFromKeywords(ctx: JobContext, payload: DiscoverFromKeywordsPayload) {
   const { db } = ctx;
   if (await isSystemPaused(db)) return { skipped: "system_paused" };
 
-  const driver = getBrowserDriver();
-  const candidates: DiscoverPayload["candidates"] = [];
-
+  let queued = 0;
   for (const q of payload.queries) {
-    const found = await browserMutex.runExclusive(() =>
-      driver.discoverProfiles({ kind: q.kind, term: q.term, limit: q.limit ?? 15 }),
-    );
-    for (const p of found) {
-      candidates.push({
+    const id = await enqueue(db, {
+      kind: "discover_one",
+      payload: { funnel: payload.funnel, query: { ...q, limit: q.limit ?? 8 } },
+      dedupeKey: `discover_one:${payload.funnel}:${q.kind}:${q.term}:${new Date().toISOString().slice(0, 13)}`,
+      priority: -6,
+    });
+    if (id) queued++;
+  }
+  log.info("discover.fanout", { funnel: payload.funnel, queued });
+  return { queued };
+}
+
+type DiscoverOnePayload = {
+  funnel: "customer" | "affiliate";
+  query: { kind: "keyword" | "hashtag" | "related"; term: string; limit: number };
+};
+
+export async function handleDiscoverOne(ctx: JobContext, payload: DiscoverOnePayload) {
+  const { db } = ctx;
+  if (await isSystemPaused(db)) return { skipped: "system_paused" };
+  const { query, funnel } = payload;
+
+  const found = await browserMutex.runExclusive(() => getBrowserDriver().discoverProfiles(query));
+  log.info("discover.one", { term: query.term, kind: query.kind, found: found.length });
+  if (found.length === 0) return { term: query.term, found: 0 };
+
+  await enqueue(db, {
+    kind: "discover_profiles",
+    payload: {
+      funnel,
+      candidates: found.map((p) => ({
         igUsername: p.igUsername,
         profileUrl: p.profileUrl,
         displayName: p.displayName,
@@ -181,18 +209,13 @@ export async function handleDiscoverFromKeywords(ctx: JobContext, payload: Disco
         category: p.category,
         location: p.location,
         followerCount: p.followerCount,
-        sourceKeyword: q.term,
-        discoverySource: `browser_${q.kind}`,
-      });
-    }
-  }
-
-  if (candidates.length === 0) return { discovered: 0 };
-  await enqueue(db, {
-    kind: "discover_profiles",
-    payload: { funnel: payload.funnel, candidates } satisfies DiscoverPayload,
+        sourceKeyword: query.term,
+        discoverySource: `browser_${query.kind}`,
+      })),
+    } satisfies DiscoverPayload,
+    priority: -3,
   });
-  return { discovered: candidates.length };
+  return { term: query.term, found: found.length };
 }
 
 // ── score_lead ───────────────────────────────────────────────────────────────
