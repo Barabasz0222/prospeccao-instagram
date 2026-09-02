@@ -37,6 +37,7 @@ for (const variantId of ["opener_A", "opener_B"]) {
     category: signals.category,
     location: signals.location,
     niche: note ?? signals.category ?? null,
+    sourceKeyword: note ?? signals.category ?? null,
     variantId,
   });
   console.log(`\n── ${variantId} ──\n${msg}`);

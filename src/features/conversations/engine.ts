@@ -3,7 +3,30 @@ import { z } from "zod";
 import { complete, isOfflineMode } from "@/integrations/openai/client";
 import { assertOutboundText, checkOutboundText } from "@/lib/claims";
 import { loadBusiness, type Business } from "@/lib/business";
-import { normalize } from "@/lib/text";
+import { normalize, stripDashes } from "@/lib/text";
+
+// Anything "obra"-related → lead with CronoObra instead of the generic pitch.
+const CONSTRUCTION_SIGNALS = [
+  "obra", "obras", "construtora", "construcao", "construcoes", "engenharia civil",
+  "eng civil", "engenheiro civil", "arquitet", "reforma", "empreiteira",
+  "incorporadora", "gestao de obras", "materiais de construcao", "marcenaria",
+  "serralheria", "pintura predial", "gesso", "drywall", "canteiro de obras",
+];
+
+export function isConstructionLead(input: {
+  bio: string | null;
+  category: string | null;
+  displayName: string | null;
+  niche: string | null;
+  sourceKeyword?: string | null;
+}): boolean {
+  const hay = normalize(
+    [input.sourceKeyword, input.bio, input.category, input.displayName, input.niche]
+      .filter(Boolean)
+      .join(" "),
+  );
+  return CONSTRUCTION_SIGNALS.some((s) => hay.includes(s));
+}
 
 export const INTENTS = [
   "interested",
@@ -101,6 +124,7 @@ export async function decideReply(args: {
   funnel: "customer" | "affiliate";
   history: string;
   profileSummary: string;
+  isConstruction?: boolean;
   leadId?: number;
 }): Promise<Decision> {
   const business = loadBusiness();
@@ -110,15 +134,21 @@ export async function decideReply(args: {
   }
 
   if (isOfflineMode()) {
-    const d = offlineDecision(args.intent, args.funnel);
-    if (d.message) assertOutboundText(d.message);
+    const d = offlineDecision(args.intent, args.funnel, !!args.isConstruction);
+    if (d.message) {
+      d.message = stripDashes(d.message);
+      assertOutboundText(d.message);
+    }
     return d;
   }
 
+  const cronoobra = (business.links.cronoobra ?? "").replace(/^https?:\/\/(www\.)?/, "");
   const target =
-    args.funnel === "customer"
-      ? business.links.whatsapp
-      : (business.links.affiliateGroup ?? business.links.whatsapp);
+    args.funnel !== "customer"
+      ? (business.links.affiliateGroup ?? business.links.whatsapp)
+      : args.isConstruction && cronoobra
+        ? `${cronoobra} (teste grátis da primeira obra) e o WhatsApp ${business.links.whatsapp} para dúvidas`
+        : business.links.whatsapp;
 
   const res = await complete({
     purpose: "decide_reply",
@@ -131,7 +161,10 @@ export async function decideReply(args: {
       business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
       "Nunca invente taxa, número, garantia, superlativo, relação societária. Nunca prometa aprovação de conta ou resultado financeiro.",
       "A conversa deve parecer pessoal, não campanha. Nunca finja ser cliente.",
-      `Quando o lead demonstrar interesse real, encaminhe para: ${target}`,
+      "NUNCA use travessão (— ou –). Separe ideias com ponto ou vírgula, como no WhatsApp.",
+      args.isConstruction
+        ? `Este lead trabalha com obra. Priorize o CronoObra. Quando demonstrar interesse, encaminhe para: ${target}`
+        : `Quando o lead demonstrar interesse real, encaminhe para: ${target}`,
       `Responda APENAS com JSON {"action": <um de ${ACTIONS.join("|")}>, "message": <texto em pt-BR, opcional>, "rationale": <curto>}.`,
     ].join("\n"),
     messages: [
@@ -149,8 +182,8 @@ export async function decideReply(args: {
     return { action: "escalate_human", rationale: "Não consegui interpretar a decisão do modelo." };
   }
 
-  // Verified-claims gate on any outbound text.
   if (decision.message) {
+    decision.message = stripDashes(decision.message);
     const check = checkOutboundText(decision.message);
     if (!check.ok) {
       return {
@@ -177,12 +210,19 @@ function heuristicIntent(text: string): Intent {
   return "ambiguous";
 }
 
-function offlineDecision(intent: Intent, funnel: "customer" | "affiliate"): Decision {
+function offlineDecision(
+  intent: Intent,
+  funnel: "customer" | "affiliate",
+  construction: boolean,
+): Decision {
   const business = loadBusiness();
+  const cronoobra = (business.links.cronoobra ?? "").replace(/^https?:\/\/(www\.)?/, "");
   const target =
-    funnel === "customer"
-      ? business.links.whatsapp
-      : (business.links.affiliateGroup ?? business.links.whatsapp);
+    funnel !== "customer"
+      ? (business.links.affiliateGroup ?? business.links.whatsapp)
+      : construction && cronoobra
+        ? `${cronoobra}, e me chama no WhatsApp se tiver dúvida: ${business.links.whatsapp}`
+        : business.links.whatsapp;
   switch (intent) {
     case "opt_out":
       return { action: "close", rationale: "Opt-out." };
@@ -197,14 +237,16 @@ function offlineDecision(intent: Intent, funnel: "customer" | "affiliate"): Deci
     case "interested":
       return {
         action: "forward_whatsapp",
-        message: `Show! Consigo te dar os detalhes por aqui: ${target}`,
-        rationale: "Lead demonstrou interesse — encaminhar.",
+        message: construction
+          ? `Show! Dá pra testar de graça a primeira obra em ${target}`
+          : `Show! Consigo te dar os detalhes por aqui: ${target}`,
+        rationale: "Lead demonstrou interesse, encaminhar.",
       };
     case "objection":
       return {
         action: "handle_objection",
         message:
-          "Entendo. A ideia não é te tomar tempo — em poucos minutos dá pra ver se faz sentido pro seu caso.",
+          "Entendo. A ideia não é te tomar tempo, em poucos minutos dá pra ver se faz sentido pro seu caso.",
         rationale: "Tratar objeção leve.",
       };
     case "not_interested":
@@ -235,6 +277,7 @@ export type OpenerInput = {
   category: string | null;
   location: string | null;
   niche: string | null;
+  sourceKeyword?: string | null;
   variantId: string;
   leadId?: number;
 };
@@ -251,27 +294,35 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
     input.category ??
     (input.bio ? input.bio.split(/[.·|\n]/)[0]?.trim() ?? null : null);
 
-  const offline = offlineOpener(input, ref, business);
+  const construction = input.funnel === "customer" && isConstructionLead(input);
+  const offline = offlineOpener(input, ref, business, construction);
   if (isOfflineMode()) return offline;
 
   // A/B: two opener styles the experiment compares.
   const angle =
     input.variantId === "opener_B"
-      ? "Abordagem B: comece com uma observação/pergunta sobre uma tarefa operacional que um negócio desse tipo costuma fazer no manual (agenda, orçamento, cobrança, follow-up), sem afirmar que ELES fazem assim. Depois apresente a BraszTech em uma frase."
-      : "Abordagem A: comece elogiando algo concreto e verdadeiro do perfil, depois apresente a BraszTech e ofereça mostrar um exemplo prático do que dá pra automatizar no ramo dele.";
+      ? "Abordagem B: comece com uma observação ou pergunta sobre uma tarefa operacional que um negócio desse tipo costuma fazer no manual (agenda, orçamento, cronograma, cobrança, follow-up), sem afirmar que ELES fazem assim. Depois apresente a solução em uma frase."
+      : "Abordagem A: comece elogiando algo concreto e verdadeiro do perfil, depois apresente a solução e ofereça mostrar um exemplo prático pro ramo dele.";
+
+  const pitch = construction
+    ? [
+        "Este lead trabalha com obra. LIDERE com o CronoObra: sistema de cronograma, faturamento e financeiro de obra, e a primeira obra é gratuita para testar.",
+        `Inclua o link ${business.links.cronoobra ?? "cronoobra.com.br"} no texto e diga que ele pode chamar no WhatsApp se tiver dúvida.`,
+        "Pode citar em UMA frase curta, como segunda opção, que a BraszTech também faz sistema e automação sob medida.",
+      ].join("\n")
+    : "Apresente que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina.";
 
   const system = [
     `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
-    "Curta (2-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
+    "Curta (2 a 4 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
+    "NUNCA use travessão (— ou –). Separe ideias com ponto ou vírgula. Escreva como uma pessoa escreveria no WhatsApp.",
     "PROIBIDO afirmar qualquer coisa fora desta lista literal:",
     business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
-    "Nunca prometa aumento de faturamento, redução de custo/tempo, ROI, resultado financeiro, número, taxa, garantia ou superlativo. Não peça dados. Termine com uma pergunta leve.",
-    input.funnel === "affiliate"
-      ? "Contexto: convite para o programa de afiliados."
-      : angle,
+    "Nunca prometa aumento de faturamento, redução de custo ou tempo, ROI, resultado financeiro, número, taxa, garantia ou superlativo. Não peça dados. Termine com uma pergunta leve.",
+    input.funnel === "affiliate" ? "Contexto: convite para o programa de afiliados." : `${angle}\n${pitch}`,
     "Responda só com o texto da mensagem.",
   ].join("\n");
-  const userMsg = `Perfil @${input.igUsername} — nome: ${input.displayName ?? "?"} · bio: ${input.bio ?? "?"} · categoria: ${input.category ?? "?"} · local: ${input.location ?? "?"}`;
+  const userMsg = `Perfil @${input.igUsername}. nome: ${input.displayName ?? "?"}. bio: ${input.bio ?? "?"}. categoria: ${input.category ?? "?"}. local: ${input.location ?? "?"}`;
 
   // Up to 2 attempts; the verified-claims guard is the backstop. On repeated
   // violation, fall back to the safe template — never throw, never block the job.
@@ -279,25 +330,48 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
     const res = await complete({
       purpose: "generate_opener",
       leadId: input.leadId,
-      maxTokens: 220,
-      system: attempt === 0 ? system : `${system}\nSua última resposta violou a regra. Reescreva sem nenhuma promessa de resultado.`,
+      maxTokens: 260,
+      system:
+        attempt === 0
+          ? system
+          : `${system}\nSua última resposta violou a regra. Reescreva sem promessa de resultado e sem travessão.`,
       messages: [{ role: "user", content: userMsg }],
     });
-    const text = res.text.trim();
+    const text = stripDashes(res.text.trim());
     if (checkOutboundText(text).ok) return text;
   }
   return offline;
 }
 
-function offlineOpener(input: OpenerInput, ref: string | null, business: Business): string {
+function offlineOpener(
+  input: OpenerInput,
+  ref: string | null,
+  business: Business,
+  construction: boolean,
+): string {
   const who = input.displayName ? input.displayName : `@${input.igUsername}`;
   const place = input.location ? ` em ${input.location.split(",")[0]}` : "";
-  if (input.funnel === "affiliate") {
-    return `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou da ${business.company.name} — ${business.owner.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`;
-  }
   const seg = ref ? ` (${ref})` : "";
-  if (input.variantId === "opener_B") {
-    return `Oi! Vi o perfil de ${who}${seg}${place}. Uma dúvida: o que hoje mais consome tempo da equipe aí no operacional — agenda, orçamento, cobrança? Sou ${business.owner.name}, da ${business.company.name}, a gente cria sistema e automação sob medida pra isso. Vale uma conversa rápida?`;
+
+  if (input.funnel === "affiliate") {
+    return stripDashes(
+      `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou ${input.displayName ? "o " : ""}${business.owner.name}, da ${business.company.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`,
+    );
   }
-  return `Oi! Vi o perfil de ${who}${seg}${place}. Sou ${business.owner.name}, da ${business.company.name} — a gente cria sistemas e automações sob medida pra tirar tarefa manual da rotina das empresas. Faz sentido eu te mostrar rapidinho como isso funcionaria no seu caso?`;
+
+  if (construction) {
+    const site = (business.links.cronoobra ?? "cronoobra.com.br").replace(/^https?:\/\/(www\.)?/, "");
+    return stripDashes(
+      `Oi! Vi que a ${who} trabalha com obra${place}. Sou o ${business.owner.name}, da ${business.company.name}. A gente tem o CronoObra, um sistema de cronograma, faturamento e financeiro de obra, e a primeira obra é gratuita pra testar em ${site}. Qualquer dúvida me chama no WhatsApp. Também dá pra criar sistema sob medida se você tiver outra necessidade. Faz sentido dar uma olhada?`,
+    );
+  }
+
+  if (input.variantId === "opener_B") {
+    return stripDashes(
+      `Oi! Vi o perfil de ${who}${seg}${place}. Uma dúvida: o que hoje mais consome tempo da equipe aí no operacional, agenda, orçamento, cobrança? Sou o ${business.owner.name}, da ${business.company.name}, a gente cria sistema e automação sob medida pra isso. Vale uma conversa rápida?`,
+    );
+  }
+  return stripDashes(
+    `Oi! Vi o perfil de ${who}${seg}${place}. Sou o ${business.owner.name}, da ${business.company.name}. A gente cria sistema e automação sob medida pra tirar tarefa manual da rotina das empresas. Faz sentido eu te mostrar rapidinho como isso funcionaria no seu caso?`,
+  );
 }

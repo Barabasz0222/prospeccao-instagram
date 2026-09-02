@@ -14,6 +14,7 @@ const schema = z.object({
   links: z.object({
     whatsapp: z.string().url(),
     affiliateGroup: z.string().url().nullable(),
+    cronoobra: z.string().url().optional(),
   }),
   pitch: z.object({
     oneLine: z.string().min(1),

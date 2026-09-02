@@ -11,7 +11,13 @@ import {
   moveChannel,
   recordOutbound,
 } from "@/features/conversations/repo";
-import { classifyIntent, decideReply, generateOpener } from "@/features/conversations/engine";
+import {
+  classifyIntent,
+  decideReply,
+  generateOpener,
+  isConstructionLead,
+} from "@/features/conversations/engine";
+import { stripDashes } from "@/lib/text";
 import { loadBusiness } from "@/lib/business";
 import { getBrowserDriver } from "@/integrations/browser";
 import { sendApiMessage } from "@/integrations/instagram/api";
@@ -284,6 +290,7 @@ export async function handleScoreLead(ctx: JobContext, payload: { leadId: number
     category: fresh!.category,
     location: fresh!.location,
     niche: fresh!.niche,
+    sourceKeyword: fresh!.sourceKeyword,
     variantId,
     leadId: lead.id,
   });
@@ -460,10 +467,11 @@ export async function handleSendFollowup(ctx: JobContext, payload: FollowupPaylo
   if (outboundCount > maxFollowups) return { skipped: "followup_limit" };
 
   const business = loadBusiness();
-  const nudge =
+  const nudge = stripDashes(
     lead.funnel === "affiliate"
-      ? `Oi de novo! Só retomando — se fizer sentido conversarmos sobre o programa de afiliados da ${business.company.name}, é só me chamar. Sem problema se não for o momento.`
-      : `Oi! Passando pra retomar. Se quiser, te mostro rapidinho um caso da ${business.company.name} — e se não for a hora, tudo certo, é só avisar.`;
+      ? `Oi de novo! Só retomando. Se fizer sentido conversarmos sobre o programa de afiliados da ${business.company.name}, é só me chamar. Sem problema se não for o momento.`
+      : `Oi! Passando pra retomar. Se quiser, te mostro rapidinho um caso da ${business.company.name}. Se não for a hora, tudo certo, é só avisar.`,
+  );
 
   return runBrowserSend(ctx, jobId, {
     lead,
@@ -533,7 +541,14 @@ export async function handleProcessInbound(ctx: JobContext, payload: ProcessInbo
     intent,
     funnel: lead.funnel,
     history,
-    profileSummary: `${lead.displayName ?? lead.igUsername} — ${lead.bio ?? ""} (${lead.category ?? "?"})`,
+    profileSummary: `${lead.displayName ?? lead.igUsername}. ${lead.bio ?? ""} (${lead.category ?? "?"})`,
+    isConstruction: isConstructionLead({
+      bio: lead.bio,
+      category: lead.category,
+      displayName: lead.displayName,
+      niche: lead.niche,
+      sourceKeyword: lead.sourceKeyword,
+    }),
     leadId,
   });
 
