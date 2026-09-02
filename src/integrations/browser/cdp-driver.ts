@@ -415,8 +415,18 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
 
+      // Restricted accounts ("não aceita novas solicitações") simply have no
+      // Message button — that is the target's setting, not a failure of ours.
       const msgButton = page.getByRole("button", { name: /message|mensagem|enviar mensagem/i }).first();
-      await msgButton.waitFor({ state: "visible", timeout: 15_000 });
+      try {
+        await msgButton.waitFor({ state: "visible", timeout: 15_000 });
+      } catch {
+        return {
+          status: "blocked",
+          reason: "perfil sem botão de mensagem (não aceita solicitação, ou seletor mudou)",
+          evidence: await this.capture(page, input, consoleErrors, networkFailures),
+        };
+      }
       await msgButton.click();
 
       const box = page.getByRole("textbox").first();
@@ -424,7 +434,11 @@ export class CdpBrowserDriver implements BrowserDriver {
       await box.click();
 
       // Human rhythm: per-character delay, then a pause before sending.
-      await box.pressSequentially(input.message, { delay: input.typingDelayMs ?? randomBetween(40, 120) });
+      // Generous timeout so a longer opener does not trip on the default 30s.
+      await box.pressSequentially(input.message, {
+        delay: input.typingDelayMs ?? randomBetween(35, 90),
+        timeout: 90_000,
+      });
       await page.waitForTimeout(randomBetween(800, 2200));
 
       if (this.mode === "dry_run") {

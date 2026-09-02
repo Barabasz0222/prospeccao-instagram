@@ -301,44 +301,44 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
   // A/B: two opener styles the experiment compares.
   const angle =
     input.variantId === "opener_B"
-      ? "Abordagem B: comece com uma observação ou pergunta sobre uma tarefa operacional que um negócio desse tipo costuma fazer no manual (agenda, orçamento, cronograma, cobrança, follow-up), sem afirmar que ELES fazem assim. Depois apresente a solução em uma frase."
-      : "Abordagem A: comece elogiando algo concreto e verdadeiro do perfil, depois apresente a solução e ofereça mostrar um exemplo prático pro ramo dele.";
+      ? "Abordagem B: comece com uma pergunta leve e curiosa sobre o dia a dia dele (ex: como costuma organizar agenda ou orçamento). NÃO afirme que ele faz no manual, NÃO diga 'imagino que'. Só pergunte."
+      : "Abordagem A: comece com um elogio curto e concreto a algo do perfil, depois uma frase apresentando a BraszTech.";
 
   const pitch = construction
-    ? [
-        "Este lead trabalha com obra. LIDERE com o CronoObra: sistema de cronograma, faturamento e financeiro de obra, e a primeira obra é gratuita para testar.",
-        `Inclua o link ${business.links.cronoobra ?? "cronoobra.com.br"} no texto e diga que ele pode chamar no WhatsApp se tiver dúvida.`,
-        "Pode citar em UMA frase curta, como segunda opção, que a BraszTech também faz sistema e automação sob medida.",
-      ].join("\n")
-    : "Apresente que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina.";
+    ? `Este lead trabalha com obra. Cite o CronoObra em uma frase: sistema de cronograma, faturamento e financeiro de obra, primeira obra gratuita para testar em ${business.links.cronoobra ?? "cronoobra.com.br"}.`
+    : "Apresente em uma frase que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina.";
 
   const system = [
-    `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
-    "Curta (2 a 4 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
-    "NUNCA use travessão (— ou –). Separe ideias com ponto ou vírgula. Escreva como uma pessoa escreveria no WhatsApp.",
+    `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}, no direct do Instagram.`,
+    "REGRA DE TAMANHO: no máximo 2 frases e no máximo 320 caracteres no total. Se passar disso, corte.",
+    "Tom de mensagem de WhatsApp entre conhecidos. Sem parecer vendedor. Sem emoji. Sem travessão (— ou –), use ponto ou vírgula.",
+    "Não diga que a rotina dele é manual nem 'imagino que'. Não use jargão. Não peça dados.",
     "PROIBIDO afirmar qualquer coisa fora desta lista literal:",
     business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
-    "Nunca prometa aumento de faturamento, redução de custo ou tempo, ROI, resultado financeiro, número, taxa, garantia ou superlativo. Não peça dados. Termine com uma pergunta leve.",
+    "Nunca prometa faturamento, economia de custo ou tempo, ROI, número, taxa, garantia ou superlativo.",
+    "Termine com uma pergunta curta e leve.",
     input.funnel === "affiliate" ? "Contexto: convite para o programa de afiliados." : `${angle}\n${pitch}`,
-    "Responda só com o texto da mensagem.",
+    "Responda só com o texto da mensagem, nada mais.",
   ].join("\n");
   const userMsg = `Perfil @${input.igUsername}. nome: ${input.displayName ?? "?"}. bio: ${input.bio ?? "?"}. categoria: ${input.category ?? "?"}. local: ${input.location ?? "?"}`;
 
-  // Up to 2 attempts; the verified-claims guard is the backstop. On repeated
-  // violation, fall back to the safe template — never throw, never block the job.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Up to 3 attempts; the verified-claims guard and the length cap are the
+  // backstop. On repeated failure, fall back to the safe template.
+  const MAX_LEN = 340;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const nudge =
+      attempt === 0
+        ? ""
+        : `\nSua resposta anterior foi rejeitada (${attempt === 1 ? "regra de afirmação ou tamanho" : "ainda fora das regras"}). Reescreva em no máximo 2 frases curtas, sem promessa de resultado, sem travessão.`;
     const res = await complete({
       purpose: "generate_opener",
       leadId: input.leadId,
-      maxTokens: 260,
-      system:
-        attempt === 0
-          ? system
-          : `${system}\nSua última resposta violou a regra. Reescreva sem promessa de resultado e sem travessão.`,
+      maxTokens: 180,
+      system: system + nudge,
       messages: [{ role: "user", content: userMsg }],
     });
     const text = stripDashes(res.text.trim());
-    if (checkOutboundText(text).ok) return text;
+    if (text.length <= MAX_LEN && checkOutboundText(text).ok) return text;
   }
   return offline;
 }
@@ -353,25 +353,27 @@ function offlineOpener(
   const place = input.location ? ` em ${input.location.split(",")[0]}` : "";
   const seg = ref ? ` (${ref})` : "";
 
+  const me = `${business.owner.name}, da ${business.company.name}`;
+
   if (input.funnel === "affiliate") {
     return stripDashes(
-      `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou ${input.displayName ? "o " : ""}${business.owner.name}, da ${business.company.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`,
+      `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou o ${me}, temos um programa de afiliados que pode combinar com seu público. Posso te explicar como funciona?`,
     );
   }
 
   if (construction) {
     const site = (business.links.cronoobra ?? "cronoobra.com.br").replace(/^https?:\/\/(www\.)?/, "");
     return stripDashes(
-      `Oi! Vi que a ${who} trabalha com obra${place}. Sou o ${business.owner.name}, da ${business.company.name}. A gente tem o CronoObra, um sistema de cronograma, faturamento e financeiro de obra, e a primeira obra é gratuita pra testar em ${site}. Qualquer dúvida me chama no WhatsApp. Também dá pra criar sistema sob medida se você tiver outra necessidade. Faz sentido dar uma olhada?`,
+      `Oi! Vi que a ${who} trabalha com obra${place}. Sou o ${me}, temos o CronoObra pra cronograma, faturamento e financeiro de obra, a primeira obra é gratuita pra testar em ${site}. Faz sentido dar uma olhada?`,
     );
   }
 
   if (input.variantId === "opener_B") {
     return stripDashes(
-      `Oi! Vi o perfil de ${who}${seg}${place}. Uma dúvida: o que hoje mais consome tempo da equipe aí no operacional, agenda, orçamento, cobrança? Sou o ${business.owner.name}, da ${business.company.name}, a gente cria sistema e automação sob medida pra isso. Vale uma conversa rápida?`,
+      `Oi${who ? `, ${who}` : ""}! Como vocês costumam organizar agenda e orçamento hoje em dia? Pergunto porque sou o ${me}, a gente cria sistema e automação sob medida pra esse tipo de coisa. Vale uma conversa rápida?`,
     );
   }
   return stripDashes(
-    `Oi! Vi o perfil de ${who}${seg}${place}. Sou o ${business.owner.name}, da ${business.company.name}. A gente cria sistema e automação sob medida pra tirar tarefa manual da rotina das empresas. Faz sentido eu te mostrar rapidinho como isso funcionaria no seu caso?`,
+    `Oi! Vi o perfil de ${who}${seg}${place}. Sou o ${me}, a gente cria sistema e automação sob medida pra tirar tarefa manual da rotina. Faz sentido eu te mostrar um exemplo pro seu caso?`,
   );
 }

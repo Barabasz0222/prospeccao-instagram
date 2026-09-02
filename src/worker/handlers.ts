@@ -381,6 +381,15 @@ async function runBrowserSend(
       throw new Error(result.error);
     }
     if (result.status === "blocked") {
+      // dry_run is not a real block; a real one (no message button, logged out)
+      // takes the lead out of the queue instead of retrying forever.
+      if (!result.reason.startsWith("dry_run")) {
+        await db
+          .update(leads)
+          .set({ channelState: "blocked", pipelineStage: "closed", updatedAt: new Date().toISOString() })
+          .where(eq(leads.id, lead.id));
+        await db.insert(schema.events).values({ leadId: lead.id, type: "dm_blocked", data: { reason: result.reason } });
+      }
       await raiseAlert(db, "browser", "warning", `envio bloqueado: ${result.reason}`);
       return { blocked: result.reason };
     }
