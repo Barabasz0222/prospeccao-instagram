@@ -36,6 +36,21 @@ describe("pain vs vendor signals", () => {
     expect(manual.reasons.join(" ")).toMatch(/operação manual/);
   });
 
+  it("penalizes a huge media / infoproduct account (not a local SMB)", () => {
+    const media = scoreLead(
+      leadOf({
+        displayName: "Contabilidade Facilitada",
+        bio: "A maior escola de formação contábil do país · Exame CFC, Pós, Concursos",
+        category: "Educação",
+        followerCount: 649_000,
+        sourceKeyword: "contabilidade",
+      }),
+      business,
+    );
+    expect(media.icpScore).toBeLessThan(0.4);
+    expect(media.reasons.join(" ")).toMatch(/grande demais/);
+  });
+
   it("penalizes an automation agency (a peer, not a client)", () => {
     const vendor = scoreLead(
       leadOf({

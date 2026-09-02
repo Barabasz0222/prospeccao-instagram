@@ -114,8 +114,18 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
     }
   }
 
+  // Audience sanity: a local SMB that needs a custom system is rarely a
+  // 100k+ account — that size is media / infoproduct / influencer territory.
+  const f = lead.followerCount ?? 0;
+  let audiencePenalty = 0;
+  if (f >= 500_000) audiencePenalty = 0.4;
+  else if (f >= 150_000) audiencePenalty = 0.25;
+  else if (f >= 60_000) audiencePenalty = 0.1;
+  if (audiencePenalty > 0) reasons.push(`audiência ${f} (grande demais p/ PME — penalizado)`);
+
   const base = 0.5 * keywordScore + 0.25 * segmentScore + 0.1 * geoScore + 0.1;
-  let icpScore = base * (0.6 + 0.4 * actorWeight) + painBonus + confirmBonus - vendorPenalty;
+  let icpScore =
+    base * (0.6 + 0.4 * actorWeight) + painBonus + confirmBonus - vendorPenalty - audiencePenalty;
   icpScore = round2(Math.max(0, Math.min(1, icpScore)));
 
   return {
