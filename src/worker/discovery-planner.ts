@@ -1,11 +1,50 @@
+import { and, count, eq, inArray, lt } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import * as schema from "@/db/schema";
+import { leads } from "@/db/schema";
 import type { Business } from "@/lib/business";
 import { getSetting } from "@/features/settings/repo";
+import { log } from "@/lib/logger";
 import { normalize } from "@/lib/text";
 import { enqueue } from "./queue";
 
 type Db = LibSQLDatabase<typeof schema>;
+
+/** Qualified/discovered leads still waiting for their first browser DM. */
+export async function pendingBacklog(db: Db): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(leads)
+    .where(
+      and(
+        inArray(leads.pipelineStage, ["discovered", "qualified"]),
+        eq(leads.channelState, "browser_contact_pending"),
+      ),
+    );
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * Closes leads that were never contacted within `leads.stale_days` (default
+ * 30) — an old profile is not worth a cold DM. Returns how many were expired.
+ */
+export async function expireStaleLeads(db: Db): Promise<number> {
+  const days = await getSetting<number>(db, "leads.stale_days", 30);
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+  const res = await db
+    .update(leads)
+    .set({ pipelineStage: "closed", channelState: "completed", updatedAt: new Date().toISOString() })
+    .where(
+      and(
+        inArray(leads.pipelineStage, ["discovered", "qualified"]),
+        eq(leads.channelState, "browser_contact_pending"),
+        lt(leads.createdAt, cutoff),
+      ),
+    )
+    .returning({ id: leads.id });
+  if (res.length) log.info("leads.expired_stale", { count: res.length, olderThanDays: days });
+  return res.length;
+}
 
 type Query = { kind: "keyword" | "hashtag"; term: string; limit?: number };
 
@@ -32,6 +71,17 @@ export function planQueries(terms: string[], perTermLimit: number): Query[] {
  * on a schedule, no operator action.
  */
 export async function enqueueDiscoveryRun(db: Db, business: Business): Promise<number> {
+  await expireStaleLeads(db);
+
+  // Backlog cap: no point discovering more while a big queue of qualified
+  // leads still waits for a first DM (the daily rate limit is the bottleneck).
+  const maxBacklog = await getSetting<number>(db, "discovery.max_backlog", 300);
+  const backlog = await pendingBacklog(db);
+  if (backlog >= maxBacklog) {
+    log.info("discovery.paused_backlog", { backlog, maxBacklog });
+    return 0;
+  }
+
   const perTerm = await getSetting<number>(db, "discovery.profiles_per_term", 3);
   const extra = await getSetting<string[]>(db, "discovery.extra_hashtags", []);
   // Funil B (afiliados) só roda quando há um destino configurado

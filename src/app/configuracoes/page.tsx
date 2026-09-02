@@ -10,8 +10,10 @@ const TUNABLES: { key: string; label: string; fallback: number }[] = [
   { key: "leads.qualify_threshold", label: "Limiar de qualificação (0–1)", fallback: 0.4 },
   { key: "followup.delay_days", label: "Dias até o follow-up", fallback: 3 },
   { key: "followup.max", label: "Máximo de follow-ups", fallback: 1 },
-  { key: "discovery.interval_hours", label: "Descoberta: intervalo (horas)", fallback: 8 },
-  { key: "discovery.profiles_per_term", label: "Descoberta: perfis por termo", fallback: 8 },
+  { key: "discovery.interval_hours", label: "Descoberta: intervalo (horas)", fallback: 12 },
+  { key: "discovery.profiles_per_term", label: "Descoberta: perfis por termo", fallback: 3 },
+  { key: "discovery.max_backlog", label: "Descoberta: pausar acima de N leads na fila", fallback: 300 },
+  { key: "leads.stale_days", label: "Encerrar lead não contatado após N dias", fallback: 30 },
 ];
 
 export default async function ConfiguracoesPage() {
