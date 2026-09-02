@@ -20,13 +20,9 @@ export function toHashtag(phrase: string): string {
  * profiles come from.
  */
 export function planQueries(terms: string[], perTermLimit: number): Query[] {
-  const out: Query[] = [];
-  for (const t of terms) {
-    const tag = toHashtag(t);
-    if (tag.length >= 3 && tag.length <= 30) out.push({ kind: "hashtag", term: tag, limit: perTermLimit });
-    out.push({ kind: "keyword", term: t, limit: perTermLimit });
-  }
-  return out;
+  // Keyword (search-box) queries only — Instagram hashtag pages need heavy JS
+  // and consistently return nothing when scraped, so they just waste a cycle.
+  return terms.map((t) => ({ kind: "keyword" as const, term: t, limit: perTermLimit }));
 }
 
 /**

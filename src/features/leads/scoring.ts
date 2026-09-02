@@ -102,8 +102,20 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   if (pain.length) reasons.push(`sinais de operação manual: ${pain.length}`);
   if (vendor.length) reasons.push(`sinais de fornecedor de software: ${vendor.length} (penalizado)`);
 
+  // The lead was found by searching sourceKeyword; if that term also shows up
+  // in their name/bio, they clearly ARE that kind of business — a real local
+  // company even when the bio is pure brand fluff with no pain wording.
+  let confirmBonus = 0;
+  if (lead.sourceKeyword) {
+    const kwToks = [...keywordTokens(lead.sourceKeyword, 3)];
+    if (kwToks.length > 0 && kwToks.every((t) => hayTokens.has(t))) {
+      confirmBonus = 0.12;
+      reasons.push(`confirma o ramo buscado (${lead.sourceKeyword})`);
+    }
+  }
+
   const base = 0.5 * keywordScore + 0.25 * segmentScore + 0.1 * geoScore + 0.1;
-  let icpScore = base * (0.6 + 0.4 * actorWeight) + painBonus - vendorPenalty;
+  let icpScore = base * (0.6 + 0.4 * actorWeight) + painBonus + confirmBonus - vendorPenalty;
   icpScore = round2(Math.max(0, Math.min(1, icpScore)));
 
   return {

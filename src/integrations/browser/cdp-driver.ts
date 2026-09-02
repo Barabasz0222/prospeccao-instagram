@@ -20,21 +20,39 @@ const RESERVED = new Set([
   "emails", "session", "challenge", "oauth", "http", "https",
 ]);
 
-/** "12.3K" / "12,3 mil" / "1.2M" → integer. */
+/**
+ * "6.036" / "6,036" / "12,3 mil" / "1.2M" / "638" → integer.
+ * Without a k/m/mil suffix the value is a plain integer, so every "." and ","
+ * is a thousands separator (this was the "6.036 → 6" bug). With a suffix, only
+ * the last separator is the decimal point.
+ */
 function expandCount(s: string): number | null {
-  const cleaned = s.trim().replace(/\s+/g, "").replace(/\.(?=\d{3}\b)/g, "");
-  const m = cleaned.match(/^([\d.,]+)\s*(mil|mi|k|m)?$/i);
+  const t = s.trim().toLowerCase().replace(/\s+/g, " ");
+  const m = t.match(/^([\d.,]+)\s*(mil|mi|k|m|b)?$/);
   if (!m) return null;
-  let n = parseFloat(m[1]!.replace(",", "."));
-  const suf = (m[2] ?? "").toLowerCase();
-  if (suf === "mil" || suf === "k") n *= 1_000;
-  if (suf === "mi" || suf === "m") n *= 1_000_000;
+  const suf = m[2] ?? "";
+  let n: number;
+  if (suf) {
+    const dec = m[1]!.replace(/[.,](?=.*[.,])/g, "").replace(",", ".");
+    n = parseFloat(dec);
+    if (suf === "mil" || suf === "k") n *= 1_000;
+    else if (suf === "mi" || suf === "m") n *= 1_000_000;
+    else if (suf === "b") n *= 1_000_000_000;
+  } else {
+    n = parseInt(m[1]!.replace(/[.,]/g, ""), 10);
+  }
   return Number.isFinite(n) ? Math.round(n) : null;
 }
+
+/** @internal test hook */
+export const __expandCountForTest = expandCount;
 
 const BUTTON_LINES =
   /^(seguir|following|seguindo|mensagem|message|enviar mensagem|send message|contato|contact|inscrever|subscribe|mais|more|ver mais|\.{2,}|editar perfil|edit profile|promover|promote|e-mail|email|ligar|call)$/i;
 const COUNT_LINE = /(seguidor|seguindo|publica|post|follower|following)/i;
+// Mutual-follow hint, highlight-reel names, and "e mais N" link counters that
+// Instagram renders inside the header block.
+const HEADER_JUNK = /^(seguido\(a\) por|seguido por|followed by|e mais \d)/i;
 // A line that is only emoji / punctuation carries no signal.
 const NOISE_LINE = /^[\p{P}\p{S}\p{Emoji_Presentation}\p{Extended_Pictographic}\s]+$/u;
 
@@ -61,19 +79,20 @@ function parseProfile(handle: string, html: string, headerText: string): Profile
     grab(/([\d.,]+\s*(?:mil|mi|k|m)?)\s*(?:publica|posts?)/i) ?? grab(/([\d.,]+\s*[KMB]?)\s*Posts/i);
 
   // Header text lines minus the handle, buttons, counts and the display name.
+  // Everything from the first "Seguido(a) por..." onward is highlight-reel
+  // names and link counters — drop that tail.
   const junk = new Set<string>([handle.toLowerCase(), (displayName ?? "").toLowerCase()]);
-  const lines = headerText
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(
-      (l) =>
-        l &&
-        !junk.has(l.toLowerCase()) &&
-        !BUTTON_LINES.test(l) &&
-        !COUNT_LINE.test(l) &&
-        !NOISE_LINE.test(l) &&
-        !/^\d[\d.,]*\s*(mil|mi|k|m)?$/i.test(l),
-    );
+  const rawLines = headerText.split("\n").map((l) => l.trim());
+  const cut = rawLines.findIndex((l) => HEADER_JUNK.test(l));
+  const lines = (cut >= 0 ? rawLines.slice(0, cut) : rawLines).filter(
+    (l) =>
+      l &&
+      !junk.has(l.toLowerCase()) &&
+      !BUTTON_LINES.test(l) &&
+      !COUNT_LINE.test(l) &&
+      !NOISE_LINE.test(l) &&
+      !/^\d[\d.,]*\s*(mil|mi|k|m)?$/i.test(l),
+  );
   // First short line is usually the business category; the rest is the bio.
   let category: string | null = null;
   let bioLines = lines;
@@ -319,6 +338,7 @@ export class CdpBrowserDriver implements BrowserDriver {
           category: signals.category,
           followerCount: signals.followerCount,
           isPrivate: signals.isPrivate,
+          ogDesc: (html.match(/<meta property="og:description" content="([^"]*)"/i)?.[1] ?? "").slice(0, 120),
         });
       }
 

@@ -16,11 +16,11 @@ describe("toHashtag", () => {
 });
 
 describe("planQueries", () => {
-  it("produces a hashtag + keyword query per term", () => {
-    const q = planQueries(["gestão de obras"], 8);
+  it("produces one keyword query per term", () => {
+    const q = planQueries(["gestão de obras", "advocacia"], 8);
     expect(q).toEqual([
-      { kind: "hashtag", term: "gestaodeobras", limit: 8 },
       { kind: "keyword", term: "gestão de obras", limit: 8 },
+      { kind: "keyword", term: "advocacia", limit: 8 },
     ]);
   });
 });
