@@ -289,5 +289,6 @@ function offlineOpener(input: OpenerInput, ref: string | null, business: Busines
   if (input.funnel === "affiliate") {
     return `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou da ${business.company.name} — ${business.owner.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`;
   }
-  return `Oi! Vi o perfil de ${who}${ref ? ` (${ref})` : ""}${place}. Sou ${business.owner.name}, da ${business.company.name} — a gente desenvolve sistemas e automações sob medida, e tem um SaaS de gestão de obras já em uso real. Faz sentido eu te mostrar um caso rápido?`;
+  const seg = ref ? ` (${ref})` : "";
+  return `Oi! Vi o perfil de ${who}${seg}${place}. Sou ${business.owner.name}, da ${business.company.name} — a gente cria sistemas e automações sob medida pra tirar tarefa manual da rotina das empresas. Faz sentido eu te mostrar rapidinho como isso funcionaria no seu caso?`;
 }
