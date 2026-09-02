@@ -254,15 +254,21 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
   const offline = offlineOpener(input, ref, business);
   if (isOfflineMode()) return offline;
 
+  // A/B: two opener styles the experiment compares.
+  const angle =
+    input.variantId === "opener_B"
+      ? "Abordagem B: comece com uma observação/pergunta sobre uma tarefa operacional que um negócio desse tipo costuma fazer no manual (agenda, orçamento, cobrança, follow-up), sem afirmar que ELES fazem assim. Depois apresente a BraszTech em uma frase."
+      : "Abordagem A: comece elogiando algo concreto e verdadeiro do perfil, depois apresente a BraszTech e ofereça mostrar um exemplo prático do que dá pra automatizar no ramo dele.";
+
   const system = [
     `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}.`,
-    "Curta (1-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
+    "Curta (2-3 frases), pessoal, verdadeira, baseada no perfil real. Nada de campanha, nada de emoji em excesso.",
     "PROIBIDO afirmar qualquer coisa fora desta lista literal:",
     business.verifiedClaims.map((c) => `- ${c}`).join("\n"),
     "Nunca prometa aumento de faturamento, redução de custo/tempo, ROI, resultado financeiro, número, taxa, garantia ou superlativo. Não peça dados. Termine com uma pergunta leve.",
     input.funnel === "affiliate"
       ? "Contexto: convite para o programa de afiliados."
-      : "Contexto: apresentar a empresa e sondar interesse.",
+      : angle,
     "Responda só com o texto da mensagem.",
   ].join("\n");
   const userMsg = `Perfil @${input.igUsername} — nome: ${input.displayName ?? "?"} · bio: ${input.bio ?? "?"} · categoria: ${input.category ?? "?"} · local: ${input.location ?? "?"}`;
@@ -290,5 +296,8 @@ function offlineOpener(input: OpenerInput, ref: string | null, business: Busines
     return `Oi! Acompanho o conteúdo de ${who}${ref ? ` sobre ${ref}` : ""}. Sou da ${business.company.name} — ${business.owner.name}. Temos um programa de afiliados e achei que combinaria com o seu público. Topa eu te explicar como funciona?`;
   }
   const seg = ref ? ` (${ref})` : "";
+  if (input.variantId === "opener_B") {
+    return `Oi! Vi o perfil de ${who}${seg}${place}. Uma dúvida: o que hoje mais consome tempo da equipe aí no operacional — agenda, orçamento, cobrança? Sou ${business.owner.name}, da ${business.company.name}, a gente cria sistema e automação sob medida pra isso. Vale uma conversa rápida?`;
+  }
   return `Oi! Vi o perfil de ${who}${seg}${place}. Sou ${business.owner.name}, da ${business.company.name} — a gente cria sistemas e automações sob medida pra tirar tarefa manual da rotina das empresas. Faz sentido eu te mostrar rapidinho como isso funcionaria no seu caso?`;
 }
