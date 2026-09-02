@@ -16,6 +16,31 @@ const EMPLOYEE_HINTS = ["colaborador", "funcionario", "funcionário", "equipe", 
 const STORE_HINTS = ["loja", "atacado", "varejo", "empresa", "ltda", "me ", "eireli", "cnpj", "orcamento", "orçamento", "atendimento", "horario de funcionamento"];
 const CREATOR_HINTS = ["criador de conteudo", "creator", "influencer", "digital creator", "podcast", "canal", "newsletter"];
 
+// Bio phrases that suggest a manual, systemless operation — the real BraszTech
+// buyer. Boost these; they separate a target from a generic listing.
+const PAIN_SIGNALS = [
+  "orcamento pelo whatsapp", "orcamento sem compromisso", "agende seu horario",
+  "agende pelo whatsapp", "agendamento pelo whatsapp", "chame no whatsapp",
+  "atendimento pelo whatsapp", "faca seu orcamento", "solicite um orcamento",
+  "marque sua consulta", "agende sua avaliacao", "consultas com hora marcada",
+  "atendimento com hora marcada", "planilha", "controle manual", "sob demanda",
+  "trabalhamos com agenda", "reservas pelo direct", "pedidos pelo direct",
+  "encomendas pelo whatsapp", "delivery pelo whatsapp",
+];
+
+// Bio phrases that mean this account SELLS software/automation — a peer, not a
+// client. Penalize; the funnel is not for competitors.
+const VENDOR_SIGNALS = [
+  "automacao de processos", "automacao comercial", "agencia de automacao",
+  "criamos sistemas", "desenvolvimento de sistemas", "software house",
+  "criacao de sites", "agencia de marketing", "trafego pago", "consultoria de ia",
+  "agentes de ia", "chatbot", "crm", "no-code", "low-code", "saas", "startup de tecnologia",
+];
+
+function countHits(haystack: string, phrases: string[]): string[] {
+  return phrases.filter((p) => haystack.includes(p));
+}
+
 /** Deterministic ICP fit + actor classification from public profile signals. */
 export function scoreLead(lead: Lead, business: Business): ScoreResult {
   return lead.funnel === "affiliate"
@@ -69,8 +94,17 @@ function scoreCustomer(lead: Lead, business: Business): ScoreResult {
   const actorWeight =
     { decision_maker: 1, owner: 0.95, store: 0.8, employee: 0.4, creator: 0.2, unknown: 0.6 }[actorType];
 
-  const base = 0.55 * keywordScore + 0.3 * segmentScore + 0.1 * geoScore + 0.1;
-  const icpScore = round2(Math.max(0, Math.min(1, base * (0.6 + 0.4 * actorWeight))));
+  // Manual-operation vs software-vendor signals.
+  const pain = countHits(haystack, PAIN_SIGNALS);
+  const vendor = countHits(haystack, VENDOR_SIGNALS);
+  const painBonus = Math.min(0.2, pain.length * 0.1);
+  const vendorPenalty = Math.min(0.5, vendor.length * 0.25);
+  if (pain.length) reasons.push(`sinais de operação manual: ${pain.length}`);
+  if (vendor.length) reasons.push(`sinais de fornecedor de software: ${vendor.length} (penalizado)`);
+
+  const base = 0.5 * keywordScore + 0.25 * segmentScore + 0.1 * geoScore + 0.1;
+  let icpScore = base * (0.6 + 0.4 * actorWeight) + painBonus - vendorPenalty;
+  icpScore = round2(Math.max(0, Math.min(1, icpScore)));
 
   return {
     icpScore,

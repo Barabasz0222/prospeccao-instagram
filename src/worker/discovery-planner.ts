@@ -36,7 +36,7 @@ export function planQueries(terms: string[], perTermLimit: number): Query[] {
  * on a schedule, no operator action.
  */
 export async function enqueueDiscoveryRun(db: Db, business: Business): Promise<number> {
-  const perTerm = await getSetting<number>(db, "discovery.profiles_per_term", 4);
+  const perTerm = await getSetting<number>(db, "discovery.profiles_per_term", 3);
   const extra = await getSetting<string[]>(db, "discovery.extra_hashtags", []);
   // Funil B (afiliados) só roda quando há um destino configurado
   // (links.affiliateGroup). Sem grupo/link, não há para onde encaminhar.

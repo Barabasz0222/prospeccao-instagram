@@ -32,7 +32,7 @@ async function maybeBackup() {
 
 /** Autonomous discovery: enqueue a fresh hunt every N hours (default 8). */
 async function maybeDiscover(ctx: JobContext) {
-  const everyHours = await getSetting<number>(ctx.db, "discovery.interval_hours", 8);
+  const everyHours = await getSetting<number>(ctx.db, "discovery.interval_hours", 12);
   if (Date.now() - lastDiscovery <= everyHours * 3_600_000) return;
   lastDiscovery = Date.now();
   try {
