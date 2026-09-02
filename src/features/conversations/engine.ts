@@ -308,9 +308,11 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
     ? `Este lead trabalha com obra. Cite o CronoObra em uma frase: sistema de cronograma, faturamento e financeiro de obra, primeira obra gratuita para testar em ${business.links.cronoobra ?? "cronoobra.com.br"}.`
     : "Apresente em uma frase que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina.";
 
+  const firstName = business.owner.name.split(/\s+/)[0];
   const system = [
-    `Você escreve a PRIMEIRA mensagem de prospecção da ${business.company.name}, em nome de ${business.owner.name}, no direct do Instagram.`,
-    "REGRA DE TAMANHO: no máximo 2 frases e no máximo 320 caracteres no total. Se passar disso, corte.",
+    `Você é ${business.owner.name} escrevendo pessoalmente a PRIMEIRA mensagem no direct do Instagram para um possível cliente da ${business.company.name}.`,
+    `Fale na primeira pessoa. Apresente-se como "Sou o ${firstName}, da ${business.company.name}" (uma pessoa falando, não a empresa).`,
+    "REGRA DE TAMANHO: no máximo 3 frases e no máximo 320 caracteres no total. Se passar disso, corte.",
     "Tom de mensagem de WhatsApp entre conhecidos. Sem parecer vendedor. Sem emoji. Sem travessão (— ou –), use ponto ou vírgula.",
     "Não diga que a rotina dele é manual nem 'imagino que'. Não use jargão. Não peça dados.",
     "PROIBIDO afirmar qualquer coisa fora desta lista literal:",
@@ -353,7 +355,7 @@ function offlineOpener(
   const place = input.location ? ` em ${input.location.split(",")[0]}` : "";
   const seg = ref ? ` (${ref})` : "";
 
-  const me = `${business.owner.name}, da ${business.company.name}`;
+  const me = `${business.owner.name.split(/\s+/)[0]}, da ${business.company.name}`;
 
   if (input.funnel === "affiliate") {
     return stripDashes(
