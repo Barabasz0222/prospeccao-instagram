@@ -34,11 +34,11 @@ export async function POST(req: NextRequest) {
   const messages = parseInboundMessages(payload);
   const db = getDb();
 
-  if (messages.length === 0) {
-    // No DM extracted — could be a reaction/seen/echo event, or a payload
-    // shape the parser doesn't cover yet. Log the raw so we can adjust.
-    log.info("webhook.no_message", { rawSnippet: raw.slice(0, 800) });
-  }
+  log.info("webhook.received", {
+    parsed: messages.length,
+    hasSig: !!req.headers.get("x-hub-signature-256"),
+    rawSnippet: raw.slice(0, 800),
+  });
 
   for (const m of messages) {
     try {
