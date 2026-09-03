@@ -31,7 +31,8 @@
     "drain": "tsx scripts/drain-once.ts",
     "sim": "tsx scripts/e2e-sim.ts",
     "reset": "tsx scripts/reset-db.ts && tsx src/db/migrate.ts",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "inspect-dm": "tsx scripts/inspect-dm.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.32.1",
