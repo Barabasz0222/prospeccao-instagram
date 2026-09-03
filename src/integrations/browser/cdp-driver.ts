@@ -415,11 +415,19 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
 
-      // Restricted accounts ("não aceita novas solicitações") simply have no
-      // Message button — that is the target's setting, not a failure of ours.
-      const msgButton = page.getByRole("button", { name: /message|mensagem|enviar mensagem/i }).first();
+      await page.waitForTimeout(randomBetween(1200, 2500));
+
+      // The profile action button is EXACTLY "Mensagem"/"Message" and lives in
+      // the header. A loose /mensagem/i regex also matched bio links whose URL
+      // contains "message" (wa.me/message/...), opening the wrong modal.
+      // Restricted accounts have no such button — that is the target's setting.
+      const header = page.locator("header").first();
+      const msgButton = header
+        .getByRole("button", { name: /^(mensagem|message)$/i })
+        .or(header.getByText(/^(mensagem|message)$/i))
+        .first();
       try {
-        await msgButton.waitFor({ state: "visible", timeout: 15_000 });
+        await msgButton.waitFor({ state: "visible", timeout: 12_000 });
       } catch {
         return {
           status: "blocked",
@@ -428,9 +436,22 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
       await msgButton.click();
+      await page.waitForTimeout(randomBetween(1500, 3000));
 
-      const box = page.getByRole("textbox").first();
-      await box.waitFor({ state: "visible", timeout: 15_000 });
+      // The DM composer is a contenteditable textbox, not the search <input>.
+      const box = page
+        .locator('div[contenteditable="true"][role="textbox"], textarea[placeholder*="ensagem" i], textarea[placeholder*="essage" i]')
+        .first();
+      try {
+        await box.waitFor({ state: "visible", timeout: 15_000 });
+      } catch {
+        // A dialog opened but it is not the composer (e.g. the "Links" modal).
+        return {
+          status: "blocked",
+          reason: "caixa de mensagem não abriu (abriu outra tela)",
+          evidence: await this.capture(page, input, consoleErrors, networkFailures),
+        };
+      }
       await box.click();
 
       // Human rhythm: per-character delay, then a pause before sending.

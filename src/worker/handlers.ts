@@ -357,7 +357,25 @@ async function runBrowserSend(
       if (result.error.startsWith("browser_unavailable")) {
         await tripAndPause(db, "browser", result.error);
       }
-      throw new Error(result.error);
+      // Count the attempt on the lead; after 3 real failures it goes to human
+      // review so the dispatcher stops re-picking it (and re-paying for openers).
+      const attempts = ((lead.publicSignals?.dmAttempts as number | undefined) ?? 0) + 1;
+      await db
+        .update(leads)
+        .set({
+          publicSignals: { ...(lead.publicSignals ?? {}), dmAttempts: attempts, lastDmError: result.error.slice(0, 200) },
+          ...(attempts >= 3 ? { channelState: "human_review_required" as const } : {}),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(leads.id, lead.id));
+      if (attempts >= 3) {
+        await db.insert(schema.exceptions).values({
+          leadId: lead.id,
+          kind: "dm_send_failed",
+          detail: `3 falhas ao enviar a 1ª DM. Último erro: ${result.error.slice(0, 300)}`,
+        });
+      }
+      return { failed: result.error, attempts };
     }
     if (result.status === "blocked") {
       // dry_run is not a real block; a real one (no message button, logged out)
@@ -451,6 +469,7 @@ export async function dispatchNextDm(ctx: JobContext): Promise<{
   const res = await runBrowserSend(ctx, { lead, message, variantId, kind: "first_dm" });
   if ("sent" in res) return { sent: lead.id, cooldownSec: res.cooldownSec };
   if ("blocked" in res) return { skipped: `blocked:${res.blocked}` };
+  if ("failed" in res) return { skipped: `failed(${res.attempts}x):${res.failed}` };
   return { skipped: res.skipped ?? "unknown" };
 }
 
