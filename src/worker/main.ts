@@ -5,7 +5,7 @@ import { getSetting, isSystemPaused } from "@/features/settings/repo";
 import { loadBusiness } from "@/lib/business";
 import { log } from "@/lib/logger";
 import { backupDatabase } from "@/db/backup-runner";
-import type { JobContext } from "./handlers";
+import { dispatchNextDm, type JobContext } from "./handlers";
 import { runOneJob } from "./runner";
 import { enqueue, recoverStaleJobs } from "./queue";
 import { enqueueDiscoveryRun } from "./discovery-planner";
@@ -43,6 +43,29 @@ async function maybeDiscover(ctx: JobContext) {
   }
 }
 
+let nextDmAt = 0;
+/**
+ * Sends the next first DM when the human-pace cooldown has elapsed. The
+ * dispatcher itself enforces the daily cap and operating hours, and always
+ * picks the highest-priority qualified lead — old or new.
+ */
+async function maybeDispatchDm(ctx: JobContext) {
+  if (Date.now() < nextDmAt) return;
+  try {
+    const res = await dispatchNextDm(ctx);
+    if (res.sent) {
+      nextDmAt = Date.now() + (res.cooldownSec ?? 120) * 1000;
+      log.info("dm.dispatched", { leadId: res.sent, nextInSec: res.cooldownSec });
+    } else {
+      // Nothing to send now (cap, hours, empty queue) — re-check in ~2 min.
+      nextDmAt = Date.now() + 120_000;
+    }
+  } catch (e) {
+    nextDmAt = Date.now() + 120_000;
+    log.error("dm.dispatch_failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
 let lastTokenCheck = 0;
 /** Enqueue a token-refresh check once a day. */
 async function maybeRefreshToken(ctx: JobContext) {
@@ -73,6 +96,7 @@ async function main() {
       }
       await maybeDiscover(ctx);
       await maybeRefreshToken(ctx);
+      await maybeDispatchDm(ctx);
       const outcome = await runOneJob(ctx);
       if (outcome === "idle") await sleep(POLL_INTERVAL_MS);
     } catch (e) {

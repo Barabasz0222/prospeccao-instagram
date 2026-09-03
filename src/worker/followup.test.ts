@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import { makeTestDb } from "@/db/test-helpers";
 import { conversations, leads, messages } from "@/db/schema";
 import { FakeBrowserDriver, setBrowserDriver } from "@/integrations/browser";
-import { enqueue } from "./queue";
 import { drainQueue } from "./runner";
 import { handleProcessInbound, handleSendFollowup } from "./handlers";
 
@@ -45,8 +44,7 @@ describe("follow-up", () => {
     const { db } = await makeTestDb();
     const ctx = { db, workerId: "t" };
     const id = await contactedLead(db);
-    const jobId = (await enqueue(db, { kind: "send_followup", payload: { leadId: id, kind: "browser" } }))!;
-    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" }, jobId);
+    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" });
     expect(r).toMatchObject({ sent: true });
   });
 
@@ -61,8 +59,7 @@ describe("follow-up", () => {
       text: "oi, tenho interesse",
       receivedAt: new Date().toISOString(),
     });
-    const jobId = (await enqueue(db, { kind: "send_followup", payload: { leadId: id, kind: "browser" } }))!;
-    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" }, jobId);
+    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" });
     expect(r).toMatchObject({ skipped: expect.any(String) });
   });
 
@@ -73,8 +70,7 @@ describe("follow-up", () => {
     // add a second outbound (the follow-up already sent)
     const [conv] = await db.select().from(conversations).where(eq(conversations.leadId, id));
     await db.insert(messages).values({ conversationId: conv!.id, direction: "outbound", channel: "browser", body: "fup1" });
-    const jobId = (await enqueue(db, { kind: "send_followup", payload: { leadId: id, kind: "browser" } }))!;
-    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" }, jobId);
+    const r = await handleSendFollowup(ctx, { leadId: id, kind: "browser" });
     expect(r).toEqual({ skipped: "followup_limit" });
     void drainQueue;
   });

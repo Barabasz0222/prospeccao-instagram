@@ -6,6 +6,7 @@ import { FakeBrowserDriver, setBrowserDriver } from "@/integrations/browser";
 import { discoverLead } from "@/features/leads/repo";
 import { enqueue } from "./queue";
 import { drainQueue } from "./runner";
+import { dispatchNextDm } from "./handlers";
 
 beforeAll(() => {
   Object.assign(process.env, {
@@ -40,10 +41,11 @@ describe("operator-supplied leads", () => {
     await enqueue(db, { kind: "score_lead", payload: { leadId: (r as { leadId: number }).leadId } });
 
     await drainQueue({ db, workerId: "t" });
+    await dispatchNextDm({ db, workerId: "t" });
 
     const [lead] = await db.select().from(leads).where(eq(leads.id, (r as { leadId: number }).leadId));
     expect(lead!.icpScore).toBeLessThan(0.4); // would normally be rejected
-    expect(["contacted", "qualified"]).toContain(lead!.pipelineStage);
+    expect(lead!.pipelineStage).toBe("contacted");
     expect(lead!.channelState).toBe("waiting_inbound_reply");
   });
 });

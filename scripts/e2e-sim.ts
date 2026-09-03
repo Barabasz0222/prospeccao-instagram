@@ -17,14 +17,15 @@ Object.assign(process.env, {
 import { eq } from "drizzle-orm";
 import { makeTestDb } from "@/db/test-helpers";
 import { leads, browserSendLog, messages, decisionsLog } from "@/db/schema";
+import { experiments } from "@/db/schema";
 import { setBrowserDriver, FakeBrowserDriver } from "@/integrations/browser";
 import {
+  dispatchNextDm,
   handleDiscoverProfiles,
   handleProcessInbound,
-  handleSendFirstDm,
+  handleScoreLead,
 } from "@/worker/handlers";
 import { DuplicateSendError, recordOutbound } from "@/features/conversations/repo";
-import { enqueue } from "@/worker/queue";
 
 function h(title: string) {
   console.log(`\n=== ${title} ===`);
@@ -57,15 +58,16 @@ console.log(disc); // { created: 1, duplicate: 1, blocked: 0 }
 const [lead] = await db.select().from(leads);
 console.log("lead:", { id: lead!.id, stage: lead!.pipelineStage, channel: lead!.channelState });
 
-h("2. Primeira DM pelo navegador (driver falso)");
-const dmPayload = {
-  leadId: lead!.id,
-  message:
-    "Oi! Vi que vocês tocam obras residenciais em Maringá. A BraszTech desenvolve sistemas sob medida — tem um SaaS de gestão de obras já em uso real. Posso te mostrar rapidinho?",
-  variantId: "opener_v1",
-};
-const jobId = (await enqueue(db, { kind: "send_first_dm", payload: dmPayload }))!;
-const sent = await handleSendFirstDm(ctx, dmPayload, jobId);
+h("2. Score + qualificação + 1ª DM pelo dispatcher");
+await db.insert(experiments).values({
+  key: "opener_copy_v1",
+  variable: "abertura",
+  status: "running",
+  targetSampleSize: 50,
+  variants: [{ id: "opener_A", label: "A", weight: 1, isControl: true }],
+});
+await handleScoreLead(ctx, { leadId: lead!.id });
+const sent = await dispatchNextDm(ctx);
 console.log(sent);
 console.log("DM registrada no navegador:", driver.sent.length === 1);
 
@@ -127,7 +129,7 @@ h("RESULTADO");
 const ok =
   disc.created === 1 &&
   disc.duplicate === 1 &&
-  sent && "sent" in sent &&
+  typeof sent.sent === "number" &&
   inbound.matched === true &&
   refreshed!.channelState === "api_active" &&
   inboundCount === 1 &&

@@ -6,7 +6,11 @@ import { FakeBrowserDriver, setBrowserDriver } from "@/integrations/browser";
 import { experiments } from "@/db/schema";
 import { enqueue } from "./queue";
 import { drainQueue } from "./runner";
-import { handleDiscoverProfiles, handleProcessInbound, handleSendFirstDm } from "./handlers";
+import {
+  dispatchNextDm,
+  handleDiscoverProfiles,
+  handleProcessInbound,
+} from "./handlers";
 
 beforeAll(() => {
   Object.assign(process.env, {
@@ -33,11 +37,21 @@ describe("end-to-end flow (simulation)", () => {
     });
     expect(disc).toEqual({ created: 1, duplicate: 1, blocked: 0 });
 
+    await db.insert(experiments).values({
+      key: "opener_copy_v1",
+      variable: "abertura",
+      status: "running",
+      targetSampleSize: 50,
+      variants: [{ id: "opener_A", label: "A", weight: 1, isControl: true }],
+    });
+
     const [lead] = await db.select().from(leads);
-    const payload = { leadId: lead!.id, message: "Oi! Posso te mostrar um caso rápido?", variantId: "v1" };
-    const jobId = (await enqueue(db, { kind: "send_first_dm", payload }))!;
-    const sent = await handleSendFirstDm(ctx, payload, jobId);
-    expect(sent).toMatchObject({ sent: true });
+    await db
+      .update(leads)
+      .set({ pipelineStage: "qualified", priority: 2 })
+      .where(eq(leads.id, lead!.id));
+    const sent = await dispatchNextDm(ctx);
+    expect(sent).toMatchObject({ sent: lead!.id });
     expect(driver.sent).toHaveLength(1);
 
     await db.update(leads).set({ igUserId: "meta-1" }).where(eq(leads.id, lead!.id));
@@ -91,14 +105,20 @@ describe("end-to-end flow (simulation)", () => {
 
     await drainQueue(ctx);
 
-    const all = await db.select().from(leads);
-    expect(all.length).toBe(5);
+    const scored = await db.select().from(leads);
+    expect(scored.length).toBe(5);
     // enrich_profile ran and filled signals before scoring
-    expect(all.every((l) => l.icpScore !== null && l.bio !== null)).toBe(true);
-
-    const qualified = all.filter((l) => l.pipelineStage === "contacted" || l.channelState === "waiting_inbound_reply");
+    expect(scored.every((l) => l.icpScore !== null && l.bio !== null)).toBe(true);
+    const qualified = scored.filter((l) => l.pipelineStage === "qualified");
     expect(qualified.length).toBeGreaterThan(0);
-    // every qualified lead got an assigned opener variant recorded
+
+    // The worker loop dispatches DMs; simulate a few passes.
+    for (let i = 0; i < 6; i++) await dispatchNextDm(ctx);
+
+    const contacted = (await db.select().from(leads)).filter(
+      (l) => l.pipelineStage === "contacted" && l.channelState === "waiting_inbound_reply",
+    );
+    expect(contacted.length).toBe(qualified.length);
     const variants = await db.query.experimentAssignments.findMany();
     expect(variants.length).toBe(qualified.length);
   });
