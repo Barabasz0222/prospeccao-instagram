@@ -49,6 +49,30 @@ console.log("\n=== texto do topo do perfil ===\n" + header);
 
 await page.screenshot({ path: `screenshots/inspect-dm-${handle}.png` });
 console.log(`\nscreenshot: screenshots/inspect-dm-${handle}.png`);
+
+// Step 2: open the composer and dump what's there (composer + send control).
+const msgBtn = page.getByRole("button", { name: /^(enviar mensagem|message|mensagem)$/i }).first();
+if (await msgBtn.isVisible().catch(() => false)) {
+  await msgBtn.click();
+  await page.waitForTimeout(3500);
+  console.log("\n=== depois de clicar 'Enviar mensagem' ===");
+  const composer = await page.evaluate(() => {
+    const boxes = Array.from(document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]')).map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      role: el.getAttribute("role"),
+      editable: el.getAttribute("contenteditable"),
+      placeholder: el.getAttribute("aria-placeholder") || el.getAttribute("placeholder"),
+    }));
+    const btns = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .map((el) => ({ text: (el as HTMLElement).innerText?.replace(/\s+/g, " ").trim().slice(0, 40) ?? "", aria: el.getAttribute("aria-label") }))
+      .filter((b) => /enviar|send/i.test(b.text) || /enviar|send/i.test(b.aria ?? ""));
+    return { boxes, sendButtons: btns, url: location.pathname };
+  });
+  console.log(JSON.stringify(composer, null, 2));
+  await page.screenshot({ path: `screenshots/inspect-dm-${handle}-composer.png` });
+  console.log(`screenshot: screenshots/inspect-dm-${handle}-composer.png`);
+}
+
 await page.close();
 await browser.close();
 process.exit(0);

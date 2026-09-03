@@ -474,8 +474,31 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
 
-      await box.press("Enter");
-      await page.waitForTimeout(randomBetween(600, 1500));
+      // Send: prefer the explicit "Enviar"/"Send" button, fall back to Enter.
+      const sendButton = page.getByRole("button", { name: /^(enviar|send)$/i }).first();
+      if (await sendButton.isVisible().catch(() => false)) {
+        await sendButton.click();
+      } else {
+        await box.press("Enter");
+      }
+      await page.waitForTimeout(randomBetween(1200, 2200));
+
+      // Verify it actually left: the composer clears after a successful send.
+      const leftover = (await box.textContent().catch(() => "")) ?? "";
+      const stillThere = leftover.trim().length > 0 && input.message.includes(leftover.trim().slice(0, 20));
+      if (stillThere) {
+        // One retry with Enter, then give up (do NOT report as sent).
+        await box.press("Enter").catch(() => {});
+        await page.waitForTimeout(1500);
+        const again = (await box.textContent().catch(() => "")) ?? "";
+        if (again.trim().length > 0) {
+          return {
+            status: "blocked",
+            reason: "mensagem digitada mas não enviou (sem botão Enviar / Enter não funcionou)",
+            evidence: await this.capture(page, input, consoleErrors, networkFailures),
+          };
+        }
+      }
 
       return {
         status: "sent",
