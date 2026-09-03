@@ -344,7 +344,15 @@ async function runBrowserSend(
       mode: env.BROWSER_SEND_MODE,
       variantId: opts.variantId,
       body: opts.message,
-      result: result.status === "sent" ? "sent" : result.status === "blocked" ? "blocked" : "failed",
+      // Only a real dry-run stop logs as "blocked"; anything else that isn't a
+      // clean send logs as "failed" so a systemic selector break trips the
+      // circuit breaker instead of grinding the whole queue.
+      result:
+        result.status === "sent"
+          ? "sent"
+          : result.status === "blocked" && result.reason.startsWith("dry_run")
+            ? "blocked"
+            : "failed",
       screenshotPath: result.evidence.screenshotPath,
       accessibilitySnapshotPath: result.evidence.accessibilitySnapshotPath,
       url: result.evidence.url,
@@ -353,17 +361,30 @@ async function runBrowserSend(
       error: result.status === "failed" ? result.error : result.status === "blocked" ? result.reason : null,
     });
 
-    if (result.status === "failed") {
-      if (result.error.startsWith("browser_unavailable")) {
+    // A lost session blocks EVERY lead — pause the whole system, don't burn leads.
+    if (result.status === "blocked" && result.reason.includes("não está logada")) {
+      await tripAndPause(db, "browser", result.reason);
+      return { blocked: result.reason };
+    }
+    if (result.status === "blocked" && result.reason.startsWith("dry_run")) {
+      return { blocked: result.reason };
+    }
+
+    // Everything else that isn't a clean send — a real failure OR "no message
+    // button" / "composer didn't open" (could be a restricted account OR our
+    // selector) — counts as an attempt. After 3, the lead goes to human review
+    // so the dispatcher moves on and stops re-paying for openers. The lead is
+    // never silently closed.
+    if (result.status === "failed" || result.status === "blocked") {
+      const reason = result.status === "failed" ? result.error : result.reason;
+      if (result.status === "failed" && result.error.startsWith("browser_unavailable")) {
         await tripAndPause(db, "browser", result.error);
       }
-      // Count the attempt on the lead; after 3 real failures it goes to human
-      // review so the dispatcher stops re-picking it (and re-paying for openers).
       const attempts = ((lead.publicSignals?.dmAttempts as number | undefined) ?? 0) + 1;
       await db
         .update(leads)
         .set({
-          publicSignals: { ...(lead.publicSignals ?? {}), dmAttempts: attempts, lastDmError: result.error.slice(0, 200) },
+          publicSignals: { ...(lead.publicSignals ?? {}), dmAttempts: attempts, lastDmError: reason.slice(0, 200) },
           ...(attempts >= 3 ? { channelState: "human_review_required" as const } : {}),
           updatedAt: new Date().toISOString(),
         })
@@ -372,23 +393,11 @@ async function runBrowserSend(
         await db.insert(schema.exceptions).values({
           leadId: lead.id,
           kind: "dm_send_failed",
-          detail: `3 falhas ao enviar a 1ª DM. Último erro: ${result.error.slice(0, 300)}`,
+          detail: `3 tentativas de 1ª DM falharam. Último: ${reason.slice(0, 300)}`,
         });
       }
-      return { failed: result.error, attempts };
-    }
-    if (result.status === "blocked") {
-      // dry_run is not a real block; a real one (no message button, logged out)
-      // takes the lead out of the queue instead of retrying forever.
-      if (!result.reason.startsWith("dry_run")) {
-        await db
-          .update(leads)
-          .set({ channelState: "blocked", pipelineStage: "closed", updatedAt: new Date().toISOString() })
-          .where(eq(leads.id, lead.id));
-        await db.insert(schema.events).values({ leadId: lead.id, type: "dm_blocked", data: { reason: result.reason } });
-      }
-      await raiseAlert(db, "browser", "warning", `envio bloqueado: ${result.reason}`);
-      return { blocked: result.reason };
+      await raiseAlert(db, "browser", "warning", `1ª DM não saiu (${attempts}x): ${reason}`);
+      return { failed: reason, attempts };
     }
 
     try {

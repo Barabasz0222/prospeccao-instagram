@@ -415,16 +415,17 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
 
-      await page.waitForTimeout(randomBetween(1200, 2500));
+      await page.waitForTimeout(randomBetween(1500, 3000));
 
-      // The profile action button is EXACTLY "Mensagem"/"Message" and lives in
-      // the header. A loose /mensagem/i regex also matched bio links whose URL
-      // contains "message" (wa.me/message/...), opening the wrong modal.
-      // Restricted accounts have no such button — that is the target's setting.
-      const header = page.locator("header").first();
-      const msgButton = header
-        .getByRole("button", { name: /^(mensagem|message)$/i })
-        .or(header.getByText(/^(mensagem|message)$/i))
+      // The profile's message action button. Try the exact-name button first,
+      // then a clickable element whose whole text is just "Mensagem"/"Message",
+      // scoped to the main column so we never hit a bio link or the left nav.
+      const main = page.locator("main");
+      const msgButton = main
+        .getByRole("button", { name: "Mensagem", exact: true })
+        .or(main.getByRole("button", { name: "Message", exact: true }))
+        .or(main.locator('div[role="button"]', { hasText: /^(Mensagem|Message)$/ }))
+        .or(main.locator('div[role="button"]:has(> div:text-is("Mensagem"))'))
         .first();
       try {
         await msgButton.waitFor({ state: "visible", timeout: 12_000 });
@@ -435,17 +436,22 @@ export class CdpBrowserDriver implements BrowserDriver {
           evidence: await this.capture(page, input, consoleErrors, networkFailures),
         };
       }
+      await msgButton.scrollIntoViewIfNeeded().catch(() => {});
       await msgButton.click();
-      await page.waitForTimeout(randomBetween(1500, 3000));
+      await page.waitForTimeout(randomBetween(1800, 3200));
 
-      // The DM composer is a contenteditable textbox, not the search <input>.
+      // The DM composer is a contenteditable textbox. Fall back to any textbox
+      // that is NOT the search field.
       const box = page
-        .locator('div[contenteditable="true"][role="textbox"], textarea[placeholder*="ensagem" i], textarea[placeholder*="essage" i]')
+        .locator('div[contenteditable="true"][role="textbox"]')
+        .or(page.getByRole("textbox", { name: /mensagem|message/i }))
+        .or(page.locator('textarea[placeholder*="ensagem" i], textarea[placeholder*="essage" i]'))
         .first();
       try {
         await box.waitFor({ state: "visible", timeout: 15_000 });
       } catch {
         // A dialog opened but it is not the composer (e.g. the "Links" modal).
+        await page.keyboard.press("Escape").catch(() => {});
         return {
           status: "blocked",
           reason: "caixa de mensagem não abriu (abriu outra tela)",
