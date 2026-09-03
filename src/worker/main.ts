@@ -44,6 +44,7 @@ async function maybeDiscover(ctx: JobContext) {
 }
 
 let nextDmAt = 0;
+let lastDmSkipLog = 0;
 /**
  * Sends the next first DM when the human-pace cooldown has elapsed. The
  * dispatcher itself enforces the daily cap and operating hours, and always
@@ -57,7 +58,11 @@ async function maybeDispatchDm(ctx: JobContext) {
       nextDmAt = Date.now() + (res.cooldownSec ?? 120) * 1000;
       log.info("dm.dispatched", { leadId: res.sent, nextInSec: res.cooldownSec });
     } else {
-      // Nothing to send now (cap, hours, empty queue) — re-check in ~2 min.
+      // Nothing to send now — say why, but at most once a minute.
+      if (Date.now() - lastDmSkipLog > 60_000) {
+        lastDmSkipLog = Date.now();
+        log.info("dm.skipped", { reason: res.skipped });
+      }
       nextDmAt = Date.now() + 120_000;
     }
   } catch (e) {

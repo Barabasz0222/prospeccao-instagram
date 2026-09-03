@@ -453,6 +453,15 @@ export async function dispatchNextDm(ctx: JobContext): Promise<{
   const { db } = ctx;
   if (await isSystemPaused(db)) return { skipped: "system_paused" };
 
+  // Check gate + breaker BEFORE picking a lead / paying for an opener.
+  const breaker = await checkCircuitBreaker(db);
+  if (breaker.tripped) {
+    await tripAndPause(db, "browser", breaker.reason ?? "circuit breaker");
+    return { skipped: "circuit_breaker" };
+  }
+  const gate = await browserSendGate(db, { firstRunAt: await firstRunAt(db) });
+  if (!gate.allowed) return { skipped: gate.reason };
+
   const [lead] = await db
     .select()
     .from(leads)
