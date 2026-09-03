@@ -456,14 +456,14 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
       await box.click();
+      await page.waitForTimeout(randomBetween(300, 700));
 
-      // Human rhythm: per-character delay, then a pause before sending.
-      // Generous timeout so a longer opener does not trip on the default 30s.
+      // Human rhythm: per-character delay via the keyboard on the focused box.
       await box.pressSequentially(input.message, {
         delay: input.typingDelayMs ?? randomBetween(35, 90),
         timeout: 90_000,
       });
-      await page.waitForTimeout(randomBetween(800, 2200));
+      await page.waitForTimeout(randomBetween(900, 2000));
 
       if (this.mode === "dry_run") {
         log.info("browser.dry_run.compose_ok", { leadId: input.leadId, jobId: input.jobId });
@@ -474,30 +474,30 @@ export class CdpBrowserDriver implements BrowserDriver {
         };
       }
 
-      // Send: prefer the explicit "Enviar"/"Send" button, fall back to Enter.
-      const sendButton = page.getByRole("button", { name: /^(enviar|send)$/i }).first();
-      if (await sendButton.isVisible().catch(() => false)) {
-        await sendButton.click();
-      } else {
-        await box.press("Enter");
-      }
-      await page.waitForTimeout(randomBetween(1200, 2200));
+      const composerText = () => box.innerText().catch(() => box.textContent().catch(() => ""));
+      const before = ((await composerText()) ?? "").trim();
 
-      // Verify it actually left: the composer clears after a successful send.
-      const leftover = (await box.textContent().catch(() => "")) ?? "";
-      const stillThere = leftover.trim().length > 0 && input.message.includes(leftover.trim().slice(0, 20));
-      if (stillThere) {
-        // One retry with Enter, then give up (do NOT report as sent).
-        await box.press("Enter").catch(() => {});
-        await page.waitForTimeout(1500);
-        const again = (await box.textContent().catch(() => "")) ?? "";
-        if (again.trim().length > 0) {
-          return {
-            status: "blocked",
-            reason: "mensagem digitada mas não enviou (sem botão Enviar / Enter não funcionou)",
-            evidence: await this.capture(page, input, consoleErrors, networkFailures),
-          };
+      // Instagram's modal composer sends on Enter (no Send button). Try up to 3x.
+      const sendButton = page.getByRole("button", { name: /^(enviar|send)$/i }).first();
+      let cleared = false;
+      for (let i = 0; i < 3 && !cleared; i++) {
+        if (i === 0 && (await sendButton.isVisible().catch(() => false))) {
+          await sendButton.click().catch(() => {});
+        } else {
+          await box.focus().catch(() => {});
+          await page.keyboard.press("Enter");
         }
+        await page.waitForTimeout(randomBetween(1400, 2400));
+        const now = ((await composerText()) ?? "").trim();
+        cleared = now.length === 0 || (before.length > 0 && now.length < before.length / 2);
+      }
+
+      if (!cleared) {
+        return {
+          status: "blocked",
+          reason: "mensagem digitada mas não enviou (Enter não funcionou)",
+          evidence: await this.capture(page, input, consoleErrors, networkFailures),
+        };
       }
 
       return {
