@@ -417,15 +417,12 @@ export class CdpBrowserDriver implements BrowserDriver {
 
       await page.waitForTimeout(randomBetween(1500, 3000));
 
-      // The profile's message action button. Try the exact-name button first,
-      // then a clickable element whose whole text is just "Mensagem"/"Message",
-      // scoped to the main column so we never hit a bio link or the left nav.
+      // The profile action button is "Enviar mensagem" (PT) / "Message" (EN),
+      // rendered as div[role=button]. Anchor the name so it never matches the
+      // bio-links button ("wc.me/message/... e mais 1") which opens a modal.
       const main = page.locator("main");
       const msgButton = main
-        .getByRole("button", { name: "Mensagem", exact: true })
-        .or(main.getByRole("button", { name: "Message", exact: true }))
-        .or(main.locator('div[role="button"]', { hasText: /^(Mensagem|Message)$/ }))
-        .or(main.locator('div[role="button"]:has(> div:text-is("Mensagem"))'))
+        .getByRole("button", { name: /^(enviar mensagem|message|mensagem)$/i })
         .first();
       try {
         await msgButton.waitFor({ state: "visible", timeout: 12_000 });
