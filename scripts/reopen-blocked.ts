@@ -6,12 +6,15 @@
  *   pnpm tsx scripts/reopen-blocked.ts
  */
 import "./_env";
-import { and, eq } from "drizzle-orm";
+import { and, inArray } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { leads } from "@/db/schema";
 
 const db = getDb();
 
+// Only leads that never got past the first-DM stage (a send bug pushed them to
+// 'blocked'+closed or to human review). Leads that actually replied keep their
+// state.
 const rows = await db
   .update(leads)
   .set({
@@ -20,7 +23,12 @@ const rows = await db
     publicSignals: null,
     updatedAt: new Date().toISOString(),
   })
-  .where(and(eq(leads.pipelineStage, "closed"), eq(leads.channelState, "blocked")))
+  .where(
+    and(
+      inArray(leads.channelState, ["blocked", "human_review_required"]),
+      inArray(leads.pipelineStage, ["qualified", "contacted", "closed"]),
+    ),
+  )
   .returning({ id: leads.id, u: leads.igUsername });
 
 console.log(`${rows.length} leads reabertos:`, rows.map((r) => r.u).join(", ") || "(nenhum)");
