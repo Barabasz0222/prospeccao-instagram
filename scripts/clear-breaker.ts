@@ -1,7 +1,8 @@
 /**
- * Recupera de uma sessão ruim: apaga as falhas recentes de browser_send_log
- * (as que disparam o circuit breaker), zera o contador de DMs de hoje e
- * despausa o sistema. Não toca em leads nem conversas.
+ * Recupera de uma sessão ruim: apaga o log de envios pelo navegador das
+ * últimas 6h (o que dispara o circuit breaker E infla o contador), zera o
+ * contador de DMs de hoje e despausa o sistema. Não toca em leads nem
+ * conversas.
  *
  *   pnpm clear-breaker
  */
@@ -18,28 +19,18 @@ const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
 
 const removed = await db
   .delete(browserSendLog)
-  .where(and(eq(browserSendLog.result, "failed"), gte(browserSendLog.createdAt, since)))
+  .where(gte(browserSendLog.createdAt, since))
   .returning({ id: browserSendLog.id });
 
-// Rebuild today's browser send counter from what was ACTUALLY logged as sent
-// (false "sent" from a broken send inflated it).
 const today = dayKeyInTz(new Date(), loadEnv().OPERATING_TIMEZONE);
-const realSent = await db
-  .select({ id: browserSendLog.id })
-  .from(browserSendLog)
-  .where(and(eq(browserSendLog.result, "sent"), gte(browserSendLog.createdAt, `${today}T00:00:00`)));
-
 await db
-  .insert(sendCounters)
-  .values({ day: today, channel: "browser", count: realSent.length })
-  .onConflictDoUpdate({
-    target: [sendCounters.day, sendCounters.channel],
-    set: { count: realSent.length, updatedAt: new Date().toISOString() },
-  });
+  .update(sendCounters)
+  .set({ count: 0, updatedAt: new Date().toISOString() })
+  .where(and(eq(sendCounters.day, today), eq(sendCounters.channel, "browser")));
 
 await resumeSystem(db, "clear-breaker");
 
 console.log(
-  `${removed.length} falhas apagadas. Contador de hoje ajustado para ${realSent.length}. Sistema despausado.`,
+  `${removed.length} registros de envio (6h) apagados. Contador de hoje zerado. Sistema despausado.`,
 );
 process.exit(0);

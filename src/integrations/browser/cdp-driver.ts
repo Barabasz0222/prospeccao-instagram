@@ -478,16 +478,18 @@ export class CdpBrowserDriver implements BrowserDriver {
       const before = ((await composerText()) ?? "").trim();
 
       // Instagram's modal composer sends on Enter (no Send button). Try up to 3x.
+      // locator.press() focuses the element itself first, so the key always
+      // lands on the composer even if focus drifted.
       const sendButton = page.getByRole("button", { name: /^(enviar|send)$/i }).first();
       let cleared = false;
       for (let i = 0; i < 3 && !cleared; i++) {
         if (i === 0 && (await sendButton.isVisible().catch(() => false))) {
           await sendButton.click().catch(() => {});
         } else {
-          await box.focus().catch(() => {});
-          await page.keyboard.press("Enter");
+          await box.click().catch(() => {});
+          await box.press("Enter").catch(() => {});
         }
-        await page.waitForTimeout(randomBetween(1400, 2400));
+        await page.waitForTimeout(randomBetween(1400, 2600));
         const now = ((await composerText()) ?? "").trim();
         cleared = now.length === 0 || (before.length > 0 && now.length < before.length / 2);
       }
