@@ -16,6 +16,28 @@ export type SendResult =
   | { status: "skipped"; reason: string }
   | { status: "failed"; error: string };
 
+/**
+ * Resolves an IG-scoped sender id (from a webhook `sender.id`) to its
+ * `@username`, so an inbound reply can be matched to a lead that only sent
+ * its first DM through the browser (and so never learned the numeric id).
+ * Returns null on any failure or in offline/simulation mode.
+ */
+export async function resolveIgUsername(igsid: string, accessToken?: string | null): Promise<string | null> {
+  const token = accessToken ?? process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+  if (!token || token === "test" || token === "dev" || process.env.CLAUDEIA_API_KEY === "offline") return null;
+  try {
+    const res = await fetch(
+      `${GRAPH}/${encodeURIComponent(igsid)}?fields=username&access_token=${encodeURIComponent(token)}`,
+    );
+    const data = (await res.json()) as { username?: string; error?: { message?: string } };
+    if (!res.ok || data.error || !data.username) return null;
+    return data.username;
+  } catch (e) {
+    log.error("instagram.api.resolve_username_failed", { error: e instanceof Error ? e.message : String(e) });
+    return null;
+  }
+}
+
 export type SendPreconditions = {
   recipientOptedOut: boolean;
   channelOwner: "browser" | "api" | "none";

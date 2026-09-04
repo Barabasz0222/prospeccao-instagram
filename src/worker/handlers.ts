@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import { browserSendLog, conversations, leads } from "@/db/schema";
 import * as schema from "@/db/schema";
@@ -20,7 +20,7 @@ import {
 import { stripDashes } from "@/lib/text";
 import { loadBusiness } from "@/lib/business";
 import { getBrowserDriver } from "@/integrations/browser";
-import { sendApiMessage } from "@/integrations/instagram/api";
+import { resolveIgUsername, sendApiMessage } from "@/integrations/instagram/api";
 import { getAccessToken, refreshAccessToken, tokenDaysLeft } from "@/integrations/instagram/token";
 import { getSetting, isSystemPaused, setSetting } from "@/features/settings/repo";
 import { loadEnv } from "@/lib/env";
@@ -554,9 +554,23 @@ export async function handleProcessInbound(ctx: JobContext, payload: ProcessInbo
     text: payload.text,
     receivedAt: payload.receivedAt,
     resolveLeadId: async (metaUserId) => {
-      // Best-effort: match by ig_user_id already stored on the lead.
+      // 1) Best-effort: match by ig_user_id already stored on the lead.
       const [byId] = await db.select().from(leads).where(eq(leads.igUserId, metaUserId)).limit(1);
-      return byId?.id ?? null;
+      if (byId) return byId.id;
+
+      // 2) First reply from a lead whose only DM went out via the browser —
+      // we never learned their numeric id. Resolve it via the Graph API and
+      // match by @username instead, then save the id for next time.
+      const username = await resolveIgUsername(metaUserId, await getAccessToken(db));
+      if (!username) return null;
+      const [byUsername] = await db
+        .select()
+        .from(leads)
+        .where(sql`lower(${leads.igUsername}) = lower(${username})`)
+        .limit(1);
+      if (!byUsername) return null;
+      await db.update(leads).set({ igUserId: metaUserId }).where(eq(leads.id, byUsername.id));
+      return byUsername.id;
     },
   });
 
