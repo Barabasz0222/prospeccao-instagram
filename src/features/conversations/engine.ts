@@ -306,7 +306,7 @@ export async function generateOpener(input: OpenerInput): Promise<string> {
 
   const pitch = construction
     ? `Este lead trabalha com obra. Cite o CronoObra em uma frase: sistema de cronograma, faturamento e financeiro de obra, primeira obra gratuita para testar em ${business.links.cronoobra ?? "cronoobra.com.br"}.`
-    : "Apresente em uma frase que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina.";
+    : "Apresente em uma frase que a BraszTech cria sistema e automação sob medida para tirar tarefa manual da rotina. Use \"nós criamos\", nunca \"a gente cria\".";
 
   const firstName = business.owner.name.split(/\s+/)[0];
   const system = [
@@ -372,10 +372,10 @@ function offlineOpener(
 
   if (input.variantId === "opener_B") {
     return stripDashes(
-      `Oi${who ? `, ${who}` : ""}! Como vocês costumam organizar agenda e orçamento hoje em dia? Pergunto porque sou o ${me}, a gente cria sistema e automação sob medida pra esse tipo de coisa. Vale uma conversa rápida?`,
+      `Oi${who ? `, ${who}` : ""}! Como vocês costumam organizar agenda e orçamento hoje em dia? Pergunto porque sou o ${me}, nós criamos sistema e automação sob medida pra esse tipo de coisa. Vale uma conversa rápida?`,
     );
   }
   return stripDashes(
-    `Oi! Vi o perfil de ${who}${seg}${place}. Sou o ${me}, a gente cria sistema e automação sob medida pra tirar tarefa manual da rotina. Faz sentido eu te mostrar um exemplo pro seu caso?`,
+    `Oi! Vi o perfil de ${who}${seg}${place}. Sou o ${me}, nós criamos sistema e automação sob medida pra tirar tarefa manual da rotina. Faz sentido eu te mostrar um exemplo pro seu caso?`,
   );
 }
