@@ -12,6 +12,7 @@
     "dev:worker": "tsx watch src/worker/main.ts",
     "build": "next build",
     "start": "next start -p 3000",
+    "start:all": "node scripts/start.mjs",
     "worker": "tsx src/worker/main.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
