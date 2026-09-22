@@ -421,14 +421,19 @@ async function runBrowserSend(
         .set({ pipelineStage: "contacted", updatedAt: new Date().toISOString() })
         .where(eq(leads.id, lead.id));
       await recordOutcome(db, OPENER_EXPERIMENT, lead.id, "contacted");
-      // Schedule a single follow-up if no reply comes.
-      const days = await getSetting<number>(db, "followup.delay_days", 3);
-      await enqueue(db, {
-        kind: "send_followup",
-        payload: { leadId: lead.id, kind: "browser" } satisfies FollowupPayload,
-        runAt: new Date(Date.now() + days * 86_400_000),
-        dedupeKey: `fup:${lead.id}`,
-      });
+      // Schedule a single follow-up if no reply comes — unless the operator
+      // turned follow-ups off (they compete with new leads for the same
+      // daily send cap).
+      const followupsEnabled = await getSetting<boolean>(db, "followup.enabled", true);
+      if (followupsEnabled) {
+        const days = await getSetting<number>(db, "followup.delay_days", 3);
+        await enqueue(db, {
+          kind: "send_followup",
+          payload: { leadId: lead.id, kind: "browser" } satisfies FollowupPayload,
+          runAt: new Date(Date.now() + days * 86_400_000),
+          dedupeKey: `fup:${lead.id}`,
+        });
+      }
     }
 
     const wait = randomBetween(env.MIN_SECONDS_BETWEEN_DMS, env.MAX_SECONDS_BETWEEN_DMS);
@@ -495,6 +500,7 @@ export async function dispatchNextDm(ctx: JobContext): Promise<{
 export async function handleSendFollowup(ctx: JobContext, payload: FollowupPayload) {
   const { db } = ctx;
   if (await isSystemPaused(db)) return { skipped: "system_paused" };
+  if (!(await getSetting<boolean>(db, "followup.enabled", true))) return { skipped: "followup_disabled" };
 
   const [lead] = await db.select().from(leads).where(eq(leads.id, payload.leadId)).limit(1);
   if (!lead) throw new Error(`lead ${payload.leadId} inexistente`);

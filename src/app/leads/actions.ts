@@ -47,3 +47,9 @@ export async function updateSettingAction(formData: FormData): Promise<void> {
   await setSetting(getDb(), key, Number.isFinite(num) && raw.trim() !== "" ? num : raw, "operator");
   revalidatePath("/configuracoes");
 }
+
+export async function toggleFollowupAction(formData: FormData): Promise<void> {
+  const enabled = String(formData.get("enabled")) === "true";
+  await setSetting(getDb(), "followup.enabled", enabled, "operator");
+  revalidatePath("/configuracoes");
+}

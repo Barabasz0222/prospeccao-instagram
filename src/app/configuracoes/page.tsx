@@ -2,7 +2,7 @@ import { loadEnv } from "@/lib/env";
 import { loadBusiness } from "@/lib/business";
 import { getDb } from "@/db/client";
 import { getSetting } from "@/features/settings/repo";
-import { updateSettingAction } from "../leads/actions";
+import { toggleFollowupAction, updateSettingAction } from "../leads/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +18,7 @@ const TUNABLES: { key: string; label: string; fallback: number }[] = [
 
 export default async function ConfiguracoesPage() {
   const db = getDb();
+  const followupEnabled = await getSetting<boolean>(db, "followup.enabled", true);
   const tunables = await Promise.all(
     TUNABLES.map(async (t) => ({ ...t, value: await getSetting<number>(db, t.key, t.fallback) })),
   );
@@ -70,6 +71,18 @@ export default async function ConfiguracoesPage() {
           Parâmetros ajustáveis (a IA também pode alterar dentro destes limites)
         </h2>
         <div className="space-y-2">
+          <form action={toggleFollowupAction} className="flex items-center gap-2 text-sm">
+            <input type="hidden" name="enabled" value={followupEnabled ? "false" : "true"} />
+            <label className="w-64 text-neutral-600 dark:text-neutral-400">
+              Mandar follow-up (&quot;passando pra retomar&quot;) pra quem não respondeu
+            </label>
+            <span className={followupEnabled ? "text-emerald-600" : "text-neutral-500"}>
+              {followupEnabled ? "Ligado" : "Desligado"}
+            </span>
+            <button className="rounded border border-neutral-300 px-3 py-1 text-xs hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900">
+              {followupEnabled ? "Desligar" : "Ligar"}
+            </button>
+          </form>
           {tunables.map((t) => (
             <form key={t.key} action={updateSettingAction} className="flex items-center gap-2 text-sm">
               <input type="hidden" name="key" value={t.key} />
