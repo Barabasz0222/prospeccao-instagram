@@ -6,6 +6,7 @@ import {
   advanceLeadStageAction,
   applySignalAction,
   markDoNotContactAction,
+  markManuallyContactedAction,
 } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -52,6 +53,14 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
       </dl>
 
       <section className="flex flex-wrap gap-2">
+        {lead.pipelineStage === "discovered" || lead.pipelineStage === "qualified" ? (
+          <form action={markManuallyContactedAction}>
+            <input type="hidden" name="leadId" value={lead.id} />
+            <button className="rounded border border-blue-400 px-3 py-1.5 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950">
+              Marcar: abordado (manual)
+            </button>
+          </form>
+        ) : null}
         <form action={advanceLeadStageAction}>
           <input type="hidden" name="leadId" value={lead.id} />
           <input type="hidden" name="to" value={lead.funnel === "customer" ? "whatsapp_handoff" : "joined_affiliate_group"} />
